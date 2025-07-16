@@ -1,0 +1,99 @@
+generate client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+    url = env("DATABASE_URL")
+}
+
+model User {
+    id            String   @id @default(cuid())
+    email         String   @unique
+    name          String?
+    passwordHash  String?  //Nullable for OAuth users
+    emailVerified Boolean  @default(false)
+    isActive      Boolean  @default(true)
+    created_at    DateTime @default(now())
+    updated_at    DateTime @updatedAt
+
+    // Relations
+    memberships Membership[]
+    invitesCreated Invite[]  @relation("InviteCreator")
+    session    Session[]
+
+    @@map("users")
+}
+
+model Workspace {
+    id        String    @id @default(cuid())
+    name      String
+    domain    String    @unique //Company domain
+    isActive  Boolean   @default(true)
+    createdAt DateTime  @default(now())
+    updatedAt DateTime  @updatedAt
+
+    memberships Membership[]
+    invites     Invite[]
+
+    @@map("workspaces")
+}
+
+model Membership {
+    id        String     @id @default(cuid())
+    role      MemberRole @default(MEMBER)
+    isActive  Boolean    @default(true)
+    createdAt DateTime   @default(now())
+    updatedAt DateTime   @updatedAt
+
+    // Foreign Keys
+    userId      String
+    workspaceId String
+
+    // Relations
+    user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+    workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+    @@unique([userId, workspaceId])
+    @@map("memberships")
+}
+
+model Invite {
+    id        String    @id  @default(cuid())
+    email     String
+    token     String    @unique
+    expiresAt DateTime
+    used      Boolean   @default(false)
+    createdAt DateTime  @default(now())
+
+    //Foreign Keys
+    workspaceId  String
+    createdById  String
+
+    //Relations
+    workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+    createdBy User      @relation("InviteCreator", fields: [createdById], references: [id])
+
+    @@map("invites")
+}
+
+model Session {
+    id             String  @id @default(cuid())
+    refreshToken   String  @unique
+    expiresAt      DateTime
+    isActive       Boolean @default(true)
+    createdAt      DateTime @default(now())
+
+    // Foreign Keys
+    userId  String
+
+    // Relations
+    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+    @@map("sessions")
+}
+
+enum MemberRole{
+    ADMIN
+    MEMBER
+}
