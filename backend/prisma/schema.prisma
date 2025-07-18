@@ -1,99 +1,124 @@
-generate client {
+// ===================================
+// AI-Persona Backend - Database Schema (MINIMAL, CODE-ALIGNED)
+// ===================================
+// Only models/fields/enums used in backend code are kept
+
+generator client {
     provider = "prisma-client-js"
 }
 
 datasource db {
     provider = "postgresql"
-    url = env("DATABASE_URL")
+    url      = env("DATABASE_URL")
 }
 
+// ===================================
+// USER MODEL
+// ===================================
 model User {
     id            String   @id @default(cuid())
     email         String   @unique
     name          String?
-    passwordHash  String?  //Nullable for OAuth users
+    passwordHash  String?  // Nullable for OAuth-only users
     emailVerified Boolean  @default(false)
     isActive      Boolean  @default(true)
-    created_at    DateTime @default(now())
-    updated_at    DateTime @updatedAt
-
-    // Relations
-    memberships Membership[]
-    invitesCreated Invite[]  @relation("InviteCreator")
-    session    Session[]
-
+    createdAt     DateTime @default(now())
+    updatedAt     DateTime @updatedAt
+    memberships   Membership[]
+    invitesCreated Invite[]     @relation("InviteCreator")
+    sessions      Session[]
+    // No soft delete, no profile, no 2FA, no audit fields
     @@map("users")
+    @@index([email])
+    @@index([emailVerified])
+    @@index([isActive])
 }
 
+// ===================================
+// WORKSPACE MODEL
+// ===================================
 model Workspace {
-    id        String    @id @default(cuid())
-    name      String
-    domain    String    @unique //Company domain
-    isActive  Boolean   @default(true)
-    createdAt DateTime  @default(now())
-    updatedAt DateTime  @updatedAt
-
+    id          String   @id @default(cuid())
+    name        String
+    domain      String   @unique
+    isActive    Boolean  @default(true)
+    maxMembers  Int      @default(1000)
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
     memberships Membership[]
     invites     Invite[]
-
     @@map("workspaces")
+    @@index([domain])
+    @@index([isActive])
 }
 
+// ===================================
+// MEMBERSHIP MODEL
+// ===================================
 model Membership {
-    id        String     @id @default(cuid())
-    role      MemberRole @default(MEMBER)
-    isActive  Boolean    @default(true)
-    createdAt DateTime   @default(now())
-    updatedAt DateTime   @updatedAt
-
-    // Foreign Keys
+    id          String     @id @default(cuid())
+    role        MemberRole @default(MEMBER)
+    isActive    Boolean    @default(true)
+    createdAt   DateTime   @default(now())
+    updatedAt   DateTime   @updatedAt
     userId      String
     workspaceId String
-
-    // Relations
-    user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-    workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-
+    user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+    workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
     @@unique([userId, workspaceId])
     @@map("memberships")
+    @@index([workspaceId])
+    @@index([role])
+    @@index([isActive])
 }
 
+// ===================================
+// INVITE MODEL
+// ===================================
 model Invite {
-    id        String    @id  @default(cuid())
-    email     String
-    token     String    @unique
-    expiresAt DateTime
-    used      Boolean   @default(false)
-    createdAt DateTime  @default(now())
-
-    //Foreign Keys
-    workspaceId  String
-    createdById  String
-
-    //Relations
-    workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-    createdBy User      @relation("InviteCreator", fields: [createdById], references: [id])
-
+    id          String    @id @default(cuid())
+    email       String
+    token       String    @unique
+    expiresAt   DateTime
+    used        Boolean    @default(false)
+    createdAt   DateTime  @default(now())
+    updatedAt   DateTime  @updatedAt
+    workspaceId String
+    createdById String
+    workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+    createdBy   User      @relation("InviteCreator", fields: [createdById], references: [id])
     @@map("invites")
+    @@index([email])
+    @@index([token])
+    @@index([workspaceId])
+    @@index([expiresAt])
+    @@index([used])
 }
 
+// ===================================
+// SESSION MODEL
+// ===================================
 model Session {
-    id             String  @id @default(cuid())
-    refreshToken   String  @unique
-    expiresAt      DateTime
-    isActive       Boolean @default(true)
-    createdAt      DateTime @default(now())
-
-    // Foreign Keys
-    userId  String
-
-    // Relations
-    user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
+    id            String   @id @default(cuid())
+    refreshToken  String   @unique
+    expiresAt     DateTime
+    isActive      Boolean  @default(true)
+    lastUsedAt    DateTime @default(now())
+    createdAt     DateTime @default(now())
+    updatedAt     DateTime @updatedAt
+    userId        String
+    user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
     @@map("sessions")
+    @@index([userId])
+    @@index([refreshToken])
+    @@index([expiresAt])
+    @@index([isActive])
 }
 
-enum MemberRole{
+// ===================================
+// ENUMS
+// ===================================
+enum MemberRole {
     ADMIN
     MEMBER
 }

@@ -19,56 +19,17 @@
 
 const { client: prisma } = require('../config/database');
 const { hashPassword, comparePassword } = require('../utils/encryption');
-const { normalizeEmail, isValidEmail } = require('../utils/domain');
-const { sendSecurityAlertEmail } = require('../config/email');
-const config = require('../config');
+const { normalizeEmail } = require('../utils/domain');
+const { sendUserEmail } = require('../utils/email');
+const logger = require('../utils/logger');
+const { ApiError, ERROR_CODES, HTTP_STATUS } = require('../utils/apiError');
+const { ApiResponse } = require('../utils/apiResponse');
+const { asyncHandler } = require('../utils/asyncHandler');
+const { InputValidator } = require('../validations/input');
 
-/**
- * User Service Result Types
- */
-const USER_RESULTS = {
-  SUCCESS: 'success',
-  USER_NOT_FOUND: 'user_not_found',
-  INVALID_PERMISSIONS: 'invalid_permissions',
-  EMAIL_ALREADY_EXISTS: 'email_already_exists',
-  INVALID_PASSWORD: 'invalid_password',
-  ACCOUNT_INACTIVE: 'account_inactive',
-  WORKSPACE_ACCESS_DENIED: 'workspace_access_denied',
-  VALIDATION_ERROR: 'validation_error',
-  OPERATION_FAILED: 'operation_failed',
-};
+// Initialize validators
+const inputValidator = new InputValidator();
 
-/**
- * User Events for audit logging
- */
-const USER_EVENTS = {
-  PROFILE_UPDATED: 'profile_updated',
-  PASSWORD_CHANGED: 'password_changed',
-  EMAIL_CHANGED: 'email_changed',
-  ACCOUNT_DEACTIVATED: 'account_deactivated',
-  ACCOUNT_REACTIVATED: 'account_reactivated',
-  ROLE_CHANGED: 'role_changed',
-  PREFERENCES_UPDATED: 'preferences_updated',
-  DATA_EXPORTED: 'data_exported',
-  SECURITY_EVENT: 'security_event',
-};
-
-/**
- * User Activity Types
- */
-const USER_ACTIVITY_TYPES = {
-  LOGIN: 'login',
-  LOGOUT: 'logout',
-  PROFILE_UPDATE: 'profile_update',
-  PASSWORD_CHANGE: 'password_change',
-  ROLE_CHANGE: 'role_change',
-  WORKSPACE_ACCESS: 'workspace_access',
-};
-
-/**
- * User Service Class
- * Handles all user management business logic
- */
 class UserService {
   constructor() {
     this.userMetrics = {
@@ -85,32 +46,17 @@ class UserService {
 
   /**
    * Get user profile with workspace context
-   * @param {string} userId - User ID
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} options - Query options
-   * @returns {Promise<Object>} User profile result
    */
   async getUserProfile(userId, workspaceId, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { includeActivity = false, includePreferences = true } = options;
-
-      // Get user with workspace membership
       const user = await prisma.user.findUnique({
         where: { id: userId },
         include: {
           memberships: {
-            where: {
-              workspaceId,
-              isActive: true,
-            },
+            where: { workspaceId, isActive: true },
             include: {
-              workspace: {
-                select: {
-                  id: true,
-                  name: true,
-                  domain: true,
-                },
-              },
+              workspace: { select: { id: true, name: true, domain: true } },
             },
           },
           ...(includeActivity && {
@@ -122,147 +68,111 @@ class UserService {
           }),
         },
       });
-
-      if (!user) {
-        return {
-          success: false,
-          result: USER_RESULTS.USER_NOT_FOUND,
-          message: 'User not found',
-        };
-      }
-
-      // Check workspace access
+      if (!user)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_NOT_FOUND,
+          'User not found',
+          HTTP_STATUS.NOT_FOUND,
+        );
       const membership = user.memberships.find(
         (m) => m.workspaceId === workspaceId,
       );
-      if (!membership) {
-        return {
-          success: false,
-          result: USER_RESULTS.WORKSPACE_ACCESS_DENIED,
-          message: 'User does not have access to this workspace',
-        };
-      }
-
-      // Get user preferences if requested
+      if (!membership)
+        throw new ApiError(
+          ERROR_CODES.ACCESS_DENIED,
+          'User does not have access to this workspace',
+          HTTP_STATUS.FORBIDDEN,
+        );
       let preferences = {};
-      if (includePreferences) {
+      if (includePreferences)
         preferences = await this.getUserPreferences(userId, workspaceId);
-      }
-
-      return {
-        success: true,
-        result: USER_RESULTS.SUCCESS,
-        data: {
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            emailVerified: user.emailVerified,
-            isActive: user.isActive,
-            createdAt: user.createdAt,
-            updatedAt: user.updatedAt,
-          },
-          workspace: membership.workspace,
-          role: membership.role,
-          membershipCreatedAt: membership.createdAt,
-          preferences: includePreferences ? preferences : undefined,
-          recentActivity: includeActivity ? user.sessions : undefined,
+      return ApiResponse.success('User profile retrieved successfully', {
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          emailVerified: user.emailVerified,
+          isActive: user.isActive,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
         },
-      };
-    } catch (error) {
-      console.error('Get user profile error:', error);
-
-      return {
-        success: false,
-        result: USER_RESULTS.OPERATION_FAILED,
-        message: 'Failed to retrieve user profile',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+        workspace: membership.workspace,
+        role: membership.role,
+        membershipCreatedAt: membership.createdAt,
+        preferences: includePreferences ? preferences : undefined,
+        recentActivity: includeActivity ? user.sessions : undefined,
+      });
+    })();
   }
 
   /**
    * Update user profile
-   * @param {string} userId - User ID
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} updateData - Profile update data
-   * @param {Object} options - Update options
-   * @returns {Promise<Object>} Update result
    */
   async updateUserProfile(userId, workspaceId, updateData, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { requestingUserId = userId, ipAddress = null } = options;
       const { name, email, preferences = null } = updateData;
-
       // Validate workspace access
       const accessCheck = await this.validateWorkspaceAccess(
         userId,
         workspaceId,
       );
-      if (!accessCheck.success) {
-        return accessCheck;
-      }
-
+      if (!accessCheck)
+        throw new ApiError(
+          ERROR_CODES.ACCESS_DENIED,
+          'User does not have access to this workspace',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Check if requesting user has permission to update this profile
       const canUpdate = await this.canUpdateUserProfile(
         requestingUserId,
         userId,
         workspaceId,
       );
-      if (!canUpdate) {
-        return {
-          success: false,
-          result: USER_RESULTS.INVALID_PERMISSIONS,
-          message: 'Insufficient permissions to update this profile',
-        };
-      }
-
+      if (!canUpdate)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Insufficient permissions to update this profile',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Prepare update data
       const updateFields = {};
       const changes = [];
-
-      if (name !== undefined && name !== accessCheck.data.user.name) {
+      if (name !== undefined && name !== accessCheck.user.name) {
         updateFields.name = name;
         changes.push({
           field: 'name',
-          oldValue: accessCheck.data.user.name,
+          oldValue: accessCheck.user.name,
           newValue: name,
         });
       }
-
-      if (email !== undefined && email !== accessCheck.data.user.email) {
+      if (email !== undefined && email !== accessCheck.user.email) {
         const normalizedEmail = normalizeEmail(email);
-
-        if (!isValidEmail(normalizedEmail)) {
-          return {
-            success: false,
-            result: USER_RESULTS.VALIDATION_ERROR,
-            message: 'Invalid email format',
-          };
-        }
-
+        const emailValidation = inputValidator.validateEmail(normalizedEmail);
+        if (!emailValidation.isValid)
+          throw new ApiError(
+            ERROR_CODES.VALIDATION_ERROR,
+            'Invalid email format',
+            HTTP_STATUS.BAD_REQUEST,
+          );
         // Check if email already exists
         const existingUser = await prisma.user.findUnique({
           where: { email: normalizedEmail },
         });
-
-        if (existingUser && existingUser.id !== userId) {
-          return {
-            success: false,
-            result: USER_RESULTS.EMAIL_ALREADY_EXISTS,
-            message: 'Email address is already in use',
-          };
-        }
-
+        if (existingUser && existingUser.id !== userId)
+          throw new ApiError(
+            ERROR_CODES.RESOURCE_ALREADY_EXISTS,
+            'Email address is already in use',
+            HTTP_STATUS.CONFLICT,
+          );
         updateFields.email = normalizedEmail;
         updateFields.emailVerified = false; // Require re-verification
         changes.push({
           field: 'email',
-          oldValue: accessCheck.data.user.email,
+          oldValue: accessCheck.user.email,
           newValue: normalizedEmail,
         });
       }
-
       // Update user profile
       let updatedUser = null;
       if (Object.keys(updateFields).length > 0) {
@@ -271,7 +181,6 @@ class UserService {
           data: updateFields,
         });
       }
-
       // Update preferences if provided
       if (preferences) {
         await this.updateUserPreferences(userId, workspaceId, preferences);
@@ -281,184 +190,103 @@ class UserService {
           newValue: preferences,
         });
       }
-
       // Update metrics
       this.userMetrics.profileUpdates++;
-      if (changes.some((c) => c.field === 'email')) {
+      if (changes.some((c) => c.field === 'email'))
         this.userMetrics.emailChanges++;
-      }
-
       // Log profile update
-      this._logUserEvent(USER_EVENTS.PROFILE_UPDATED, {
+      logger.info('User profile updated', {
         userId,
         requestingUserId,
         workspaceId,
         changes,
         ipAddress,
       });
-
       // Send security alert if email was changed
       if (changes.some((c) => c.field === 'email')) {
-        await sendSecurityAlertEmail({
-          email: accessCheck.data.user.email, // Send to old email
-          name: accessCheck.data.user.name,
+        await sendUserEmail('securityAlert', {
+          user: { ...accessCheck.user },
           alertType: 'email_change',
-          details: {
-            oldEmail: accessCheck.data.user.email,
+          alertDetails: {
+            oldEmail: accessCheck.user.email,
             newEmail: email,
             timestamp: new Date().toISOString(),
           },
-          workspaceName: accessCheck.data.workspace.name,
-          userId,
-          workspaceId,
+          workspace: accessCheck.workspace,
         });
       }
-
-      return {
-        success: true,
-        result: USER_RESULTS.SUCCESS,
-        message: 'Profile updated successfully',
-        data: {
-          user: updatedUser || accessCheck.data.user,
-          changes,
-          requiresEmailVerification: updateFields.email ? true : false,
-        },
-      };
-    } catch (error) {
-      console.error('Update user profile error:', error);
-
-      this._logUserEvent(USER_EVENTS.SECURITY_EVENT, {
-        event: 'profile_update_failed',
-        userId,
-        workspaceId,
-        error: error.message,
-        ipAddress: options.ipAddress,
+      return ApiResponse.success('Profile updated successfully', {
+        user: updatedUser || accessCheck.user,
+        changes,
+        requiresEmailVerification: updateFields.email ? true : false,
       });
-
-      return {
-        success: false,
-        result: USER_RESULTS.OPERATION_FAILED,
-        message: 'Failed to update profile',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+    })();
   }
 
   /**
    * Change user password
-   * @param {string} userId - User ID
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} passwordData - Password change data
-   * @param {Object} options - Change options
-   * @returns {Promise<Object>} Change result
    */
   async changeUserPassword(userId, workspaceId, passwordData, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { currentPassword, newPassword } = passwordData;
       const { ipAddress = null } = options;
-
       // Validate workspace access
       const accessCheck = await this.validateWorkspaceAccess(
         userId,
         workspaceId,
       );
-      if (!accessCheck.success) {
-        return accessCheck;
-      }
-
-      const user = accessCheck.data.user;
-
+      if (!accessCheck)
+        throw new ApiError(
+          ERROR_CODES.ACCESS_DENIED,
+          'User does not have access to this workspace',
+          HTTP_STATUS.FORBIDDEN,
+        );
+      const user = accessCheck.user;
       // Verify current password
       if (user.passwordHash) {
         const isValidPassword = await comparePassword(
           currentPassword,
           user.passwordHash,
         );
-        if (!isValidPassword) {
-          return {
-            success: false,
-            result: USER_RESULTS.INVALID_PASSWORD,
-            message: 'Current password is incorrect',
-          };
-        }
+        if (!isValidPassword)
+          throw new ApiError(
+            ERROR_CODES.AUTHENTICATION_FAILED,
+            'Current password is incorrect',
+            HTTP_STATUS.UNAUTHORIZED,
+          );
       }
-
       // Hash new password
       const newPasswordHash = await hashPassword(newPassword);
-
       // Update password
       await prisma.user.update({
         where: { id: userId },
         data: { passwordHash: newPasswordHash },
       });
-
-      // Revoke all existing sessions except current one
+      // Revoke all existing sessions
       await prisma.session.updateMany({
-        where: {
-          userId,
-          // Keep current session active if available
-        },
+        where: { userId },
         data: { isActive: false },
       });
-
       // Update metrics
       this.userMetrics.passwordChanges++;
-
       // Log password change
-      this._logUserEvent(USER_EVENTS.PASSWORD_CHANGED, {
-        userId,
-        workspaceId,
-        ipAddress,
-      });
-
+      logger.info('User password changed', { userId, workspaceId, ipAddress });
       // Send security alert
-      await sendSecurityAlertEmail({
-        email: user.email,
-        name: user.name,
+      await sendUserEmail('securityAlert', {
+        user: { ...user },
         alertType: 'password_change',
-        details: {
-          timestamp: new Date().toISOString(),
-          ipAddress,
-        },
-        workspaceName: accessCheck.data.workspace.name,
-        userId,
-        workspaceId,
+        alertDetails: { timestamp: new Date().toISOString(), ipAddress },
+        workspace: accessCheck.workspace,
       });
-
-      return {
-        success: true,
-        result: USER_RESULTS.SUCCESS,
-        message: 'Password changed successfully',
-      };
-    } catch (error) {
-      console.error('Change password error:', error);
-
-      this._logUserEvent(USER_EVENTS.SECURITY_EVENT, {
-        event: 'password_change_failed',
-        userId,
-        workspaceId,
-        error: error.message,
-        ipAddress: options.ipAddress,
-      });
-
-      return {
-        success: false,
-        result: USER_RESULTS.OPERATION_FAILED,
-        message: 'Failed to change password',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      return ApiResponse.success('Password changed successfully');
+    })();
   }
 
   /**
    * Search users within workspace
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} searchParams - Search parameters
-   * @param {Object} options - Search options
-   * @returns {Promise<Object>} Search result
    */
   async searchUsers(workspaceId, searchParams, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const {
         query = '',
         role = null,
@@ -468,28 +296,10 @@ class UserService {
         sortBy = 'name',
         sortOrder = 'asc',
       } = searchParams;
-
-      const { requestingUserId = null } = options;
-
-      // Validate requesting user has access to workspace
-      if (requestingUserId) {
-        const accessCheck = await this.validateWorkspaceAccess(
-          requestingUserId,
-          workspaceId,
-        );
-        if (!accessCheck.success) {
-          return accessCheck;
-        }
-      }
-
       // Build search filters
       const whereClause = {
         memberships: {
-          some: {
-            workspaceId,
-            isActive: true,
-            ...(role && { role }),
-          },
+          some: { workspaceId, isActive: true, ...(role && { role }) },
         },
         ...(isActive !== null && { isActive }),
         ...(query && {
@@ -499,12 +309,8 @@ class UserService {
           ],
         }),
       };
-
       // Get total count
-      const totalCount = await prisma.user.count({
-        where: whereClause,
-      });
-
+      const totalCount = await prisma.user.count({ where: whereClause });
       // Get users with pagination
       const users = await prisma.user.findMany({
         where: whereClause,
@@ -512,13 +318,7 @@ class UserService {
           memberships: {
             where: { workspaceId, isActive: true },
             include: {
-              workspace: {
-                select: {
-                  id: true,
-                  name: true,
-                  domain: true,
-                },
-              },
+              workspace: { select: { id: true, name: true, domain: true } },
             },
           },
         },
@@ -526,7 +326,6 @@ class UserService {
         skip: (page - 1) * limit,
         take: limit,
       });
-
       // Format results
       const formattedUsers = users.map((user) => ({
         id: user.id,
@@ -539,424 +338,215 @@ class UserService {
         createdAt: user.createdAt,
         updatedAt: user.updatedAt,
       }));
-
-      return {
-        success: true,
-        result: USER_RESULTS.SUCCESS,
-        data: {
-          users: formattedUsers,
-          pagination: {
-            page,
-            limit,
-            totalCount,
-            totalPages: Math.ceil(totalCount / limit),
-            hasNextPage: page < Math.ceil(totalCount / limit),
-            hasPreviousPage: page > 1,
-          },
+      return ApiResponse.success('Users retrieved successfully', {
+        users: formattedUsers,
+        pagination: {
+          page,
+          limit,
+          totalCount,
+          totalPages: Math.ceil(totalCount / limit),
+          hasNextPage: page < Math.ceil(totalCount / limit),
+          hasPreviousPage: page > 1,
         },
-      };
-    } catch (error) {
-      console.error('Search users error:', error);
-
-      return {
-        success: false,
-        result: USER_RESULTS.OPERATION_FAILED,
-        message: 'Failed to search users',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      });
+    })();
   }
 
   /**
    * Deactivate user account
-   * @param {string} userId - User ID to deactivate
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} options - Deactivation options
-   * @returns {Promise<Object>} Deactivation result
    */
   async deactivateUser(userId, workspaceId, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const {
         requestingUserId,
         reason = 'No reason provided',
         ipAddress = null,
       } = options;
-
       // Validate requesting user has admin permissions
       const canDeactivate = await this.canManageUser(
         requestingUserId,
         userId,
         workspaceId,
       );
-      if (!canDeactivate) {
-        return {
-          success: false,
-          result: USER_RESULTS.INVALID_PERMISSIONS,
-          message: 'Insufficient permissions to deactivate user',
-        };
-      }
-
+      if (!canDeactivate)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Insufficient permissions to deactivate user',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Deactivate user
       const updatedUser = await prisma.user.update({
         where: { id: userId },
         data: { isActive: false },
       });
-
       // Revoke all user sessions
       await prisma.session.updateMany({
         where: { userId },
         data: { isActive: false },
       });
-
       // Update metrics
       this.userMetrics.accountDeactivations++;
-
       // Log deactivation
-      this._logUserEvent(USER_EVENTS.ACCOUNT_DEACTIVATED, {
+      logger.info('User account deactivated', {
         userId,
         requestingUserId,
         workspaceId,
         reason,
         ipAddress,
       });
-
-      return {
-        success: true,
-        result: USER_RESULTS.SUCCESS,
-        message: 'User account deactivated successfully',
-        data: {
-          user: {
-            id: updatedUser.id,
-            email: updatedUser.email,
-            name: updatedUser.name,
-            isActive: updatedUser.isActive,
-          },
+      return ApiResponse.success('User account deactivated successfully', {
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          name: updatedUser.name,
+          isActive: updatedUser.isActive,
         },
-      };
-    } catch (error) {
-      console.error('Deactivate user error:', error);
-
-      return {
-        success: false,
-        result: USER_RESULTS.OPERATION_FAILED,
-        message: 'Failed to deactivate user',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      });
+    })();
   }
 
   /**
    * Reactivate user account
-   * @param {string} userId - User ID to reactivate
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} options - Reactivation options
-   * @returns {Promise<Object>} Reactivation result
    */
   async reactivateUser(userId, workspaceId, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { requestingUserId, ipAddress = null } = options;
-
       // Validate requesting user has admin permissions
       const canReactivate = await this.canManageUser(
         requestingUserId,
         userId,
         workspaceId,
       );
-      if (!canReactivate) {
-        return {
-          success: false,
-          result: USER_RESULTS.INVALID_PERMISSIONS,
-          message: 'Insufficient permissions to reactivate user',
-        };
-      }
-
+      if (!canReactivate)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Insufficient permissions to reactivate user',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Reactivate user
       const updatedUser = await prisma.user.update({
         where: { id: userId },
         data: { isActive: true },
       });
-
       // Update metrics
       this.userMetrics.accountReactivations++;
-
       // Log reactivation
-      this._logUserEvent(USER_EVENTS.ACCOUNT_REACTIVATED, {
+      logger.info('User account reactivated', {
         userId,
         requestingUserId,
         workspaceId,
         ipAddress,
       });
-
-      return {
-        success: true,
-        result: USER_RESULTS.SUCCESS,
-        message: 'User account reactivated successfully',
-        data: {
-          user: {
-            id: updatedUser.id,
-            email: updatedUser.email,
-            name: updatedUser.name,
-            isActive: updatedUser.isActive,
-          },
+      return ApiResponse.success('User account reactivated successfully', {
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          name: updatedUser.name,
+          isActive: updatedUser.isActive,
         },
-      };
-    } catch (error) {
-      console.error('Reactivate user error:', error);
-
-      return {
-        success: false,
-        result: USER_RESULTS.OPERATION_FAILED,
-        message: 'Failed to reactivate user',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      });
+    })();
   }
 
   /**
-   * Get user preferences
-   * @param {string} userId - User ID
-   * @param {string} workspaceId - Workspace ID
-   * @returns {Promise<Object>} User preferences
+   * Get user preferences (stub)
    */
   async getUserPreferences(userId, workspaceId) {
-    try {
-      // In a real implementation, you might have a preferences table
-      // For now, we'll return default preferences
-      return {
-        theme: 'light',
-        language: 'en',
-        timezone: 'UTC',
-        notifications: {
-          email: true,
-          push: true,
-          desktop: false,
-        },
-        privacy: {
-          profileVisible: true,
-          activityVisible: false,
-        },
-      };
-    } catch (error) {
-      console.error('Get user preferences error:', error);
-      return {};
-    }
+    // TODO: Implement real preferences storage
+    return {
+      theme: 'light',
+      language: 'en',
+      timezone: 'UTC',
+      notifications: { email: true, push: true, desktop: false },
+      privacy: { profileVisible: true, activityVisible: false },
+    };
   }
 
   /**
-   * Update user preferences
-   * @param {string} userId - User ID
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} preferences - Preferences to update
-   * @returns {Promise<Object>} Update result
+   * Update user preferences (stub)
    */
   async updateUserPreferences(userId, workspaceId, preferences) {
-    try {
-      // In a real implementation, you would update a preferences table
-      // For now, we'll just log the update
-      this._logUserEvent(USER_EVENTS.PREFERENCES_UPDATED, {
-        userId,
-        workspaceId,
-        preferences,
-      });
-
-      return {
-        success: true,
-        result: USER_RESULTS.SUCCESS,
-        message: 'Preferences updated successfully',
-      };
-    } catch (error) {
-      console.error('Update user preferences error:', error);
-      return {
-        success: false,
-        result: USER_RESULTS.OPERATION_FAILED,
-        message: 'Failed to update preferences',
-      };
-    }
+    // TODO: Implement real preferences storage
+    logger.info('User preferences updated', {
+      userId,
+      workspaceId,
+      preferences,
+    });
+    return ApiResponse.success('Preferences updated successfully');
   }
 
   /**
    * Validate workspace access for user
-   * @param {string} userId - User ID
-   * @param {string} workspaceId - Workspace ID
-   * @returns {Promise<Object>} Validation result
    */
   async validateWorkspaceAccess(userId, workspaceId) {
-    try {
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        include: {
-          memberships: {
-            where: {
-              workspaceId,
-              isActive: true,
-            },
-            include: {
-              workspace: {
-                select: {
-                  id: true,
-                  name: true,
-                  domain: true,
-                  isActive: true,
-                },
-              },
+    // Use workspaceService or direct DB check
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        memberships: {
+          where: { workspaceId, isActive: true },
+          include: {
+            workspace: {
+              select: { id: true, name: true, domain: true, isActive: true },
             },
           },
         },
-      });
-
-      if (!user) {
-        return {
-          success: false,
-          result: USER_RESULTS.USER_NOT_FOUND,
-          message: 'User not found',
-        };
-      }
-
-      if (!user.isActive) {
-        return {
-          success: false,
-          result: USER_RESULTS.ACCOUNT_INACTIVE,
-          message: 'User account is inactive',
-        };
-      }
-
-      const membership = user.memberships[0];
-      if (!membership || !membership.workspace.isActive) {
-        return {
-          success: false,
-          result: USER_RESULTS.WORKSPACE_ACCESS_DENIED,
-          message: 'User does not have access to this workspace',
-        };
-      }
-
-      return {
-        success: true,
-        result: USER_RESULTS.SUCCESS,
-        data: {
-          user,
-          workspace: membership.workspace,
-          role: membership.role,
-        },
-      };
-    } catch (error) {
-      console.error('Validate workspace access error:', error);
-      return {
-        success: false,
-        result: USER_RESULTS.OPERATION_FAILED,
-        message: 'Failed to validate workspace access',
-      };
-    }
+      },
+    });
+    if (!user || !user.isActive) return null;
+    const membership = user.memberships[0];
+    if (!membership || !membership.workspace.isActive) return null;
+    return { user, workspace: membership.workspace, role: membership.role };
   }
 
   /**
    * Check if user can update another user's profile
-   * @param {string} requestingUserId - Requesting user ID
-   * @param {string} targetUserId - Target user ID
-   * @param {string} workspaceId - Workspace ID
-   * @returns {Promise<boolean>} Whether user can update profile
    */
   async canUpdateUserProfile(requestingUserId, targetUserId, workspaceId) {
-    try {
-      // Users can always update their own profile
-      if (requestingUserId === targetUserId) {
-        return true;
-      }
-
-      // Check if requesting user is admin in workspace
-      const requestingUser = await prisma.membership.findFirst({
-        where: {
-          userId: requestingUserId,
-          workspaceId,
-          isActive: true,
-          role: 'ADMIN',
-        },
-      });
-
-      return !!requestingUser;
-    } catch (error) {
-      console.error('Check update profile permission error:', error);
-      return false;
-    }
+    // Users can always update their own profile
+    if (requestingUserId === targetUserId) return true;
+    // Check if requesting user is admin in workspace
+    const requestingUser = await prisma.membership.findFirst({
+      where: {
+        userId: requestingUserId,
+        workspaceId,
+        isActive: true,
+        role: 'ADMIN',
+      },
+    });
+    return !!requestingUser;
   }
 
   /**
    * Check if user can manage another user
-   * @param {string} requestingUserId - Requesting user ID
-   * @param {string} targetUserId - Target user ID
-   * @param {string} workspaceId - Workspace ID
-   * @returns {Promise<boolean>} Whether user can manage target user
    */
   async canManageUser(requestingUserId, targetUserId, workspaceId) {
-    try {
-      // Users cannot manage themselves for certain operations
-      if (requestingUserId === targetUserId) {
-        return false;
-      }
-
-      // Check if requesting user is admin in workspace
-      const requestingUser = await prisma.membership.findFirst({
-        where: {
-          userId: requestingUserId,
-          workspaceId,
-          isActive: true,
-          role: 'ADMIN',
-        },
-      });
-
-      return !!requestingUser;
-    } catch (error) {
-      console.error('Check manage user permission error:', error);
-      return false;
-    }
+    // Users cannot manage themselves for certain operations
+    if (requestingUserId === targetUserId) return false;
+    // Check if requesting user is admin in workspace
+    const requestingUser = await prisma.membership.findFirst({
+      where: {
+        userId: requestingUserId,
+        workspaceId,
+        isActive: true,
+        role: 'ADMIN',
+      },
+    });
+    return !!requestingUser;
   }
 
   /**
    * Get user service metrics
-   * @returns {Object} User service metrics
    */
   getMetrics() {
-    return {
-      ...this.userMetrics,
-      timestamp: new Date().toISOString(),
-    };
-  }
-
-  /**
-   * Log user events
-   * @param {string} event - Event type
-   * @param {Object} data - Event data
-   * @private
-   */
-  _logUserEvent(event, data) {
-    const logEntry = {
-      timestamp: new Date().toISOString(),
-      event,
-      data,
-      source: 'USER_SERVICE',
-    };
-
-    if (event === USER_EVENTS.SECURITY_EVENT) {
-      console.warn('👤 User Security Event:', logEntry);
-    } else if (config.logging.level === 'debug') {
-      console.log('👤 User Event:', logEntry);
-    }
-
-    // In production, send to audit log service
-    if (config.isProduction()) {
-      // TODO: Send to audit log service
-    }
+    return { ...this.userMetrics, timestamp: new Date().toISOString() };
   }
 }
 
-// Create singleton instance
 const userService = new UserService();
 
-// Export user service
 module.exports = {
-  // Main service instance
   userService,
-
-  // Service methods
   getUserProfile: (userId, workspaceId, options) =>
     userService.getUserProfile(userId, workspaceId, options),
   updateUserProfile: (userId, workspaceId, updateData, options) =>
@@ -973,8 +563,6 @@ module.exports = {
     userService.getUserPreferences(userId, workspaceId),
   updateUserPreferences: (userId, workspaceId, preferences) =>
     userService.updateUserPreferences(userId, workspaceId, preferences),
-
-  // Validation methods
   validateWorkspaceAccess: (userId, workspaceId) =>
     userService.validateWorkspaceAccess(userId, workspaceId),
   canUpdateUserProfile: (requestingUserId, targetUserId, workspaceId) =>
@@ -985,12 +573,5 @@ module.exports = {
     ),
   canManageUser: (requestingUserId, targetUserId, workspaceId) =>
     userService.canManageUser(requestingUserId, targetUserId, workspaceId),
-
-  // Utilities
   getMetrics: () => userService.getMetrics(),
-
-  // Constants
-  USER_RESULTS,
-  USER_EVENTS,
-  USER_ACTIVITY_TYPES,
 };

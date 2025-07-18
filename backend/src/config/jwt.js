@@ -16,72 +16,73 @@
  * - Integration with enhanced systems
  * - Performance monitoring and metrics
  * - Graceful error handling and recovery
- * - Redis-ready token blacklist management
+ * - In-memory token blacklist management
  *
  * @author AI-Persona Backend
  * @version 1.0.0
  */
 
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-const config = require('./index');
-const logger = require('../utils/logger');
+const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
+const config = require("./index");
+const logger = require("../utils/logger");
+const { generateTimestamp } = require("../utils/common");
 const {
   ApiError,
   SecurityError,
   AuthenticationError,
   ErrorHandler,
-} = require('../utils/apiError');
-const { asyncHandler } = require('../utils/asyncHandler');
+} = require("../utils/apiError");
+const { asyncHandler } = require("../utils/asyncHandler");
 
 /**
  * Token Types for different use cases
  */
 const TOKEN_TYPES = {
-  ACCESS: 'access',
-  REFRESH: 'refresh',
-  EMAIL_VERIFICATION: 'email_verification',
-  PASSWORD_RESET: 'password_reset',
-  INVITATION: 'invitation',
-  API_KEY: 'api_key',
-  WORKSPACE_INVITE: 'workspace_invite',
+  ACCESS: "access",
+  REFRESH: "refresh",
+  EMAIL_VERIFICATION: "email_verification",
+  PASSWORD_RESET: "password_reset",
+  INVITATION: "invitation",
+  API_KEY: "api_key",
+  WORKSPACE_INVITE: "workspace_invite",
 };
 
 /**
  * Token Audiences for different clients
  */
 const TOKEN_AUDIENCES = {
-  WEB_APP: 'web-app',
-  API_CLIENT: 'api-client',
-  ADMIN_PANEL: 'admin-panel',
-  MOBILE_APP: 'mobile-app',
-  WEBHOOK: 'webhook',
+  WEB_APP: "web-app",
+  API_CLIENT: "api-client",
+  ADMIN_PANEL: "admin-panel",
+  MOBILE_APP: "mobile-app",
+  WEBHOOK: "webhook",
 };
 
 /**
  * Token Status for tracking
  */
 const TOKEN_STATUS = {
-  ACTIVE: 'active',
-  EXPIRED: 'expired',
-  REVOKED: 'revoked',
-  BLACKLISTED: 'blacklisted',
-  INVALID: 'invalid',
+  ACTIVE: "active",
+  EXPIRED: "expired",
+  REVOKED: "revoked",
+  BLACKLISTED: "blacklisted",
+  INVALID: "invalid",
 };
 
 /**
  * JWT Security Events
  */
 const JWT_EVENTS = {
-  TOKEN_GENERATED: 'TOKEN_GENERATED',
-  TOKEN_VALIDATED: 'TOKEN_VALIDATED',
-  TOKEN_EXPIRED: 'TOKEN_EXPIRED',
-  TOKEN_REVOKED: 'TOKEN_REVOKED',
-  TOKEN_BLACKLISTED: 'TOKEN_BLACKLISTED',
-  TOKEN_REFRESHED: 'TOKEN_REFRESHED',
-  SECURITY_VIOLATION: 'SECURITY_VIOLATION',
-  SUSPICIOUS_ACTIVITY: 'SUSPICIOUS_ACTIVITY',
-  CLEANUP_COMPLETED: 'CLEANUP_COMPLETED',
+  TOKEN_GENERATED: "TOKEN_GENERATED",
+  TOKEN_VALIDATED: "TOKEN_VALIDATED",
+  TOKEN_EXPIRED: "TOKEN_EXPIRED",
+  TOKEN_REVOKED: "TOKEN_REVOKED",
+  TOKEN_BLACKLISTED: "TOKEN_BLACKLISTED",
+  TOKEN_REFRESHED: "TOKEN_REFRESHED",
+  SECURITY_VIOLATION: "SECURITY_VIOLATION",
+  SUSPICIOUS_ACTIVITY: "SUSPICIOUS_ACTIVITY",
+  CLEANUP_COMPLETED: "CLEANUP_COMPLETED",
 };
 
 /**
@@ -94,10 +95,10 @@ class JWTManager {
     this.refreshSecret = config.auth.jwt.refreshSecret;
     this.issuer = config.auth.jwt.issuer;
     this.audience = config.auth.jwt.audience;
-    this.algorithm = 'HS256';
+    this.algorithm = "HS256";
 
-    // Token storage (Redis in production, Map for development)
-    this.tokenBlacklist = new Map(); // Will be replaced with Redis
+    // Token storage (in-memory Map)
+    this.tokenBlacklist = new Map();
     this.tokenMetrics = new Map(); // Token usage metrics
 
     // Performance and security metrics
@@ -127,11 +128,11 @@ class JWTManager {
     this.cleanupIntervalMs = 3600000; // 1 hour
 
     // Initialize cleanup if not in test environment
-    if (config.NODE_ENV !== 'test') {
+    if (config.NODE_ENV !== "test") {
       this._initializeCleanup();
     }
 
-    logger.info('JWT Manager initialized', {
+    logger.info("JWT Manager initialized", {
       issuer: this.issuer,
       audience: this.audience,
       algorithm: this.algorithm,
@@ -156,7 +157,7 @@ class JWTManager {
         userId,
         email,
         workspaceId,
-        role = 'MEMBER',
+        role = "MEMBER",
         audience = TOKEN_AUDIENCES.WEB_APP,
         deviceId = null,
         ipAddress = null,
@@ -229,7 +230,7 @@ class JWTManager {
       this._storeTokenMetadata(jti, {
         userId,
         workspaceId,
-        type: 'pair',
+        type: "pair",
         createdAt: new Date(),
         ipAddress,
         deviceId,
@@ -251,13 +252,13 @@ class JWTManager {
       const tokenPair = {
         accessToken,
         refreshToken,
-        tokenType: 'Bearer',
+        tokenType: "Bearer",
         expiresIn: this._parseExpiry(config.auth.jwt.accessTokenExpiry),
         metadata: {
           jti,
           issuedAt: new Date(now * 1000).toISOString(),
           expiresAt: new Date(
-            (now + this._parseExpiry(config.auth.jwt.accessTokenExpiry)) * 1000,
+            (now + this._parseExpiry(config.auth.jwt.accessTokenExpiry)) * 1000
           ).toISOString(),
           audience,
           workspaceId,
@@ -272,11 +273,11 @@ class JWTManager {
 
       const securityError = new SecurityError(
         `Token generation failed: ${error.message}`,
-        { userId: payload.userId, ipAddress: payload.ipAddress },
+        { userId: payload.userId, ipAddress: payload.ipAddress }
       );
 
       this._logSecurityEvent(JWT_EVENTS.SECURITY_VIOLATION, {
-        event: 'TOKEN_GENERATION_FAILED',
+        event: "TOKEN_GENERATION_FAILED",
         error: error.message,
         userId: payload.userId,
         ipAddress: payload.ipAddress,
@@ -294,7 +295,7 @@ class JWTManager {
    * @param {Object} options - Additional options
    * @returns {Promise<string>} Generated token
    */
-  async generateSpecialToken(payload, type, expiresIn = '1h', options = {}) {
+  async generateSpecialToken(payload, type, expiresIn = "1h", options = {}) {
     const startTime = Date.now();
 
     try {
@@ -303,7 +304,7 @@ class JWTManager {
         throw new ApiError(
           400,
           `Invalid token type: ${type}`,
-          'INVALID_TOKEN_TYPE',
+          "INVALID_TOKEN_TYPE"
         );
       }
 
@@ -321,7 +322,7 @@ class JWTManager {
         fingerprint: this._generateFingerprint(
           payload.userId,
           payload.deviceId,
-          ipAddress,
+          ipAddress
         ),
         ...payload,
       };
@@ -359,7 +360,7 @@ class JWTManager {
       this.metrics.validationFailures++;
 
       this._logSecurityEvent(JWT_EVENTS.SECURITY_VIOLATION, {
-        event: 'SPECIAL_TOKEN_GENERATION_FAILED',
+        event: "SPECIAL_TOKEN_GENERATION_FAILED",
         type,
         error: error.message,
         userId: payload.userId,
@@ -367,7 +368,7 @@ class JWTManager {
 
       throw new SecurityError(
         `Special token generation failed: ${error.message}`,
-        { type, userId: payload.userId },
+        { type, userId: payload.userId }
       );
     }
   }
@@ -382,10 +383,10 @@ class JWTManager {
     const startTime = Date.now();
 
     try {
-      if (!token || typeof token !== 'string') {
+      if (!token || typeof token !== "string") {
         throw new AuthenticationError(
-          'Invalid token format',
-          'INVALID_TOKEN_FORMAT',
+          "Invalid token format",
+          "INVALID_TOKEN_FORMAT"
         );
       }
 
@@ -400,8 +401,8 @@ class JWTManager {
       // Check if token is blacklisted
       if (await this._isTokenBlacklisted(token)) {
         throw new AuthenticationError(
-          'Token has been revoked',
-          'TOKEN_REVOKED',
+          "Token has been revoked",
+          "TOKEN_REVOKED"
         );
       }
 
@@ -428,7 +429,7 @@ class JWTManager {
       if (requiredType && decoded.type !== requiredType) {
         throw new AuthenticationError(
           `Invalid token type. Expected: ${requiredType}, Got: ${decoded.type}`,
-          'INVALID_TOKEN_TYPE',
+          "INVALID_TOKEN_TYPE"
         );
       }
 
@@ -440,12 +441,12 @@ class JWTManager {
         const currentFingerprint = this._generateFingerprint(
           decoded.sub,
           deviceId || decoded.deviceId,
-          ipAddress || decoded.ipAddress,
+          ipAddress || decoded.ipAddress
         );
 
         if (decoded.fingerprint !== currentFingerprint) {
           this._logSecurityEvent(JWT_EVENTS.SUSPICIOUS_ACTIVITY, {
-            event: 'FINGERPRINT_MISMATCH',
+            event: "FINGERPRINT_MISMATCH",
             userId: decoded.sub,
             jti: decoded.jti,
             expectedFingerprint: decoded.fingerprint,
@@ -455,8 +456,8 @@ class JWTManager {
           });
 
           throw new SecurityError(
-            'Token security validation failed',
-            'TOKEN_SECURITY_VIOLATION',
+            "Token security validation failed",
+            "TOKEN_SECURITY_VIOLATION"
           );
         }
       }
@@ -484,23 +485,23 @@ class JWTManager {
 
       // Log validation failure
       this._logSecurityEvent(JWT_EVENTS.SECURITY_VIOLATION, {
-        event: 'TOKEN_VALIDATION_FAILED',
+        event: "TOKEN_VALIDATION_FAILED",
         error: error.message,
-        tokenPreview: token ? token.substring(0, 20) + '...' : 'null',
+        tokenPreview: token ? token.substring(0, 20) + "..." : "null",
         ipAddress,
         deviceId,
         validationTime: Date.now() - startTime,
       });
 
       // Transform JWT errors to API errors
-      if (error.name === 'TokenExpiredError') {
-        throw new AuthenticationError('Token has expired', 'TOKEN_EXPIRED');
-      } else if (error.name === 'JsonWebTokenError') {
-        throw new AuthenticationError('Invalid token', 'INVALID_TOKEN');
-      } else if (error.name === 'NotBeforeError') {
+      if (error.name === "TokenExpiredError") {
+        throw new AuthenticationError("Token has expired", "TOKEN_EXPIRED");
+      } else if (error.name === "JsonWebTokenError") {
+        throw new AuthenticationError("Invalid token", "INVALID_TOKEN");
+      } else if (error.name === "NotBeforeError") {
         throw new AuthenticationError(
-          'Token not active yet',
-          'TOKEN_NOT_ACTIVE',
+          "Token not active yet",
+          "TOKEN_NOT_ACTIVE"
         );
       } else if (error instanceof ApiError) {
         throw error;
@@ -508,7 +509,7 @@ class JWTManager {
 
       throw new AuthenticationError(
         `Token validation failed: ${error.message}`,
-        'TOKEN_VALIDATION_FAILED',
+        "TOKEN_VALIDATION_FAILED"
       );
     }
   }
@@ -537,8 +538,8 @@ class JWTManager {
       if (timeUntilExpiry < 300) {
         // Less than 5 minutes
         throw new AuthenticationError(
-          'Refresh token is too close to expiry',
-          'REFRESH_TOKEN_EXPIRED',
+          "Refresh token is too close to expiry",
+          "REFRESH_TOKEN_EXPIRED"
         );
       }
 
@@ -549,7 +550,7 @@ class JWTManager {
         context.ipAddress !== decoded.ipAddress
       ) {
         this._logSecurityEvent(JWT_EVENTS.SUSPICIOUS_ACTIVITY, {
-          event: 'IP_ADDRESS_MISMATCH',
+          event: "IP_ADDRESS_MISMATCH",
           userId: decoded.sub,
           jti: decoded.jti,
           tokenIp: decoded.ipAddress,
@@ -557,8 +558,8 @@ class JWTManager {
         });
 
         throw new SecurityError(
-          'Token security validation failed',
-          'IP_ADDRESS_MISMATCH',
+          "Token security validation failed",
+          "IP_ADDRESS_MISMATCH"
         );
       }
 
@@ -595,7 +596,7 @@ class JWTManager {
       this.metrics.validationFailures++;
 
       this._logSecurityEvent(JWT_EVENTS.SECURITY_VIOLATION, {
-        event: 'TOKEN_REFRESH_FAILED',
+        event: "TOKEN_REFRESH_FAILED",
         error: error.message,
         ipAddress: context.ipAddress,
         deviceId: context.deviceId,
@@ -607,7 +608,7 @@ class JWTManager {
 
       throw new AuthenticationError(
         `Token refresh failed: ${error.message}`,
-        'TOKEN_REFRESH_FAILED',
+        "TOKEN_REFRESH_FAILED"
       );
     }
   }
@@ -634,7 +635,7 @@ class JWTManager {
           jti: decoded.jti,
           type: decoded.type,
           workspaceId: decoded.workspace?.id,
-          reason: context.reason || 'manual_revocation',
+          reason: context.reason || "manual_revocation",
           revokedBy: context.revokedBy,
           ipAddress: context.ipAddress,
         });
@@ -644,9 +645,9 @@ class JWTManager {
 
       return false;
     } catch (error) {
-      logger.error('Token revocation failed', {
+      logger.error("Token revocation failed", {
         error: error.message,
-        tokenPreview: token ? token.substring(0, 20) + '...' : 'null',
+        tokenPreview: token ? token.substring(0, 20) + "..." : "null",
       });
       return false;
     }
@@ -669,7 +670,7 @@ class JWTManager {
         if (tokenData.token) {
           const success = await this.revokeToken(tokenData.token, {
             ...context,
-            reason: 'bulk_revocation',
+            reason: "bulk_revocation",
           });
           if (success) revokedCount++;
         }
@@ -678,14 +679,14 @@ class JWTManager {
       this._logSecurityEvent(JWT_EVENTS.TOKEN_REVOKED, {
         userId,
         count: revokedCount,
-        reason: context.reason || 'user_token_revocation',
+        reason: context.reason || "user_token_revocation",
         revokedBy: context.revokedBy,
         ipAddress: context.ipAddress,
       });
 
       return revokedCount;
     } catch (error) {
-      logger.error('Bulk token revocation failed', {
+      logger.error("Bulk token revocation failed", {
         userId,
         error: error.message,
       });
@@ -703,7 +704,7 @@ class JWTManager {
       const decoded = jwt.decode(token, { complete: true });
 
       if (!decoded) {
-        return { active: false, error: 'Invalid token format' };
+        return { active: false, error: "Invalid token format" };
       }
 
       const now = Math.floor(Date.now() / 1000);
@@ -744,15 +745,15 @@ class JWTManager {
 
       return introspection;
     } catch (error) {
-      logger.error('Token introspection failed', {
+      logger.error("Token introspection failed", {
         error: error.message,
-        tokenPreview: token ? token.substring(0, 20) + '...' : 'null',
+        tokenPreview: token ? token.substring(0, 20) + "..." : "null",
       });
 
       return {
         active: false,
         error: error.message,
-        timestamp: new Date().toISOString(),
+        timestamp: generateTimestamp(),
       };
     }
   }
@@ -789,9 +790,9 @@ class JWTManager {
       lastCleanup: this.metrics.lastCleanup,
 
       // Health indicators
-      status: errorRate < 0.1 ? 'healthy' : 'degraded',
+      status: errorRate < 0.1 ? "healthy" : "degraded",
 
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
     };
   }
 
@@ -802,25 +803,25 @@ class JWTManager {
   getHealthStatus() {
     const metrics = this.getMetrics();
     const isHealthy =
-      metrics.status === 'healthy' &&
+      metrics.status === "healthy" &&
       metrics.errorRate < 10 &&
       metrics.averageValidationTime < 200;
 
     return {
-      status: isHealthy ? 'healthy' : 'degraded',
+      status: isHealthy ? "healthy" : "degraded",
       checks: {
         errorRate: {
-          status: metrics.errorRate < 10 ? 'pass' : 'fail',
+          status: metrics.errorRate < 10 ? "pass" : "fail",
           value: `${metrics.errorRate}%`,
-          threshold: '10%',
+          threshold: "10%",
         },
         validationTime: {
-          status: metrics.averageValidationTime < 200 ? 'pass' : 'fail',
+          status: metrics.averageValidationTime < 200 ? "pass" : "fail",
           value: `${metrics.averageValidationTime}ms`,
-          threshold: '200ms',
+          threshold: "200ms",
         },
         blacklistSize: {
-          status: metrics.blacklistedTokens < 10000 ? 'pass' : 'warn',
+          status: metrics.blacklistedTokens < 10000 ? "pass" : "warn",
           value: metrics.blacklistedTokens,
           threshold: 10000,
         },
@@ -831,7 +832,7 @@ class JWTManager {
         tokensValidated: metrics.tokensValidated,
         errorRate: metrics.errorRate,
       },
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
     };
   }
 
@@ -876,7 +877,7 @@ class JWTManager {
         remainingMetadata: this.tokenMetrics.size,
       });
 
-      logger.info('JWT cleanup completed', {
+      logger.info("JWT cleanup completed", {
         cleanedBlacklist,
         cleanedMetadata,
         duration: `${duration}ms`,
@@ -893,7 +894,7 @@ class JWTManager {
         remainingMetadata: this.tokenMetrics.size,
       };
     } catch (error) {
-      logger.error('JWT cleanup failed', {
+      logger.error("JWT cleanup failed", {
         error: error.message,
         duration: Date.now() - startTime,
       });
@@ -911,7 +912,7 @@ class JWTManager {
    * @returns {Promise<void>}
    */
   async gracefulShutdown() {
-    logger.info('JWT Manager shutting down gracefully');
+    logger.info("JWT Manager shutting down gracefully");
 
     // Clear cleanup interval
     if (this.cleanupInterval) {
@@ -926,7 +927,7 @@ class JWTManager {
     this.tokenBlacklist.clear();
     this.tokenMetrics.clear();
 
-    logger.info('JWT Manager shutdown completed', {
+    logger.info("JWT Manager shutdown completed", {
       finalMetrics: this.getMetrics(),
     });
   }
@@ -942,13 +943,13 @@ class JWTManager {
       try {
         await this.cleanupExpiredTokens();
       } catch (error) {
-        logger.error('Scheduled JWT cleanup failed', {
+        logger.error("Scheduled JWT cleanup failed", {
           error: error.message,
         });
       }
     }, this.cleanupIntervalMs);
 
-    logger.debug('JWT cleanup scheduled', {
+    logger.debug("JWT cleanup scheduled", {
       interval: `${this.cleanupIntervalMs}ms`,
     });
   }
@@ -959,14 +960,14 @@ class JWTManager {
    * @private
    */
   _validateTokenPayload(payload) {
-    const requiredFields = ['userId', 'email', 'workspaceId'];
+    const requiredFields = ["userId", "email", "workspaceId"];
 
     for (const field of requiredFields) {
       if (!payload[field]) {
         throw new ApiError(
           400,
           `Missing required token payload field: ${field}`,
-          'INVALID_TOKEN_PAYLOAD',
+          "INVALID_TOKEN_PAYLOAD"
         );
       }
     }
@@ -976,8 +977,8 @@ class JWTManager {
     if (!emailRegex.test(payload.email)) {
       throw new ApiError(
         400,
-        'Invalid email format in token payload',
-        'INVALID_EMAIL_FORMAT',
+        "Invalid email format in token payload",
+        "INVALID_EMAIL_FORMAT"
       );
     }
   }
@@ -995,7 +996,7 @@ class JWTManager {
       this.metrics.securityViolations++;
 
       this._logSecurityEvent(JWT_EVENTS.SUSPICIOUS_ACTIVITY, {
-        event: 'EXCESSIVE_TOKEN_GENERATION',
+        event: "EXCESSIVE_TOKEN_GENERATION",
         userId,
         ipAddress,
         tokenCount: userTokens.length,
@@ -1003,8 +1004,8 @@ class JWTManager {
       });
 
       throw new SecurityError(
-        'Token generation rate limit exceeded',
-        'RATE_LIMIT_EXCEEDED',
+        "Token generation rate limit exceeded",
+        "RATE_LIMIT_EXCEEDED"
       );
     }
   }
@@ -1015,7 +1016,7 @@ class JWTManager {
    * @private
    */
   _generateJTI() {
-    return crypto.randomBytes(16).toString('hex');
+    return crypto.randomBytes(16).toString("hex");
   }
 
   /**
@@ -1027,11 +1028,11 @@ class JWTManager {
    * @private
    */
   _generateFingerprint(userId, deviceId, ipAddress) {
-    const data = `${userId}:${deviceId || 'unknown'}:${ipAddress || 'unknown'}`;
+    const data = `${userId}:${deviceId || "unknown"}:${ipAddress || "unknown"}`;
     return crypto
-      .createHash('sha256')
+      .createHash("sha256")
       .update(data)
-      .digest('hex')
+      .digest("hex")
       .substring(0, 16);
   }
 
@@ -1055,7 +1056,7 @@ class JWTManager {
       throw new ApiError(
         400,
         `Invalid expiry format: ${expiryString}`,
-        'INVALID_EXPIRY_FORMAT',
+        "INVALID_EXPIRY_FORMAT"
       );
     }
 
@@ -1089,13 +1090,13 @@ class JWTManager {
    * @private
    */
   _validateTokenStructure(decoded) {
-    const requiredFields = ['sub', 'iat', 'exp', 'jti', 'iss', 'aud'];
+    const requiredFields = ["sub", "iat", "exp", "jti", "iss", "aud"];
 
     for (const field of requiredFields) {
       if (!decoded[field]) {
         throw new AuthenticationError(
           `Missing required token field: ${field}`,
-          'INVALID_TOKEN_STRUCTURE',
+          "INVALID_TOKEN_STRUCTURE"
         );
       }
     }
@@ -1103,8 +1104,8 @@ class JWTManager {
     // Validate workspace context for access tokens
     if (decoded.type === TOKEN_TYPES.ACCESS && !decoded.workspace?.id) {
       throw new AuthenticationError(
-        'Missing workspace context in access token',
-        'MISSING_WORKSPACE_CONTEXT',
+        "Missing workspace context in access token",
+        "MISSING_WORKSPACE_CONTEXT"
       );
     }
   }
@@ -1199,7 +1200,7 @@ class JWTManager {
       (this.metrics.averageValidationTime + time) / 2;
 
     if (time > this.securityThresholds.validationTimeWarning) {
-      logger.warn('Slow JWT validation detected', {
+      logger.warn("Slow JWT validation detected", {
         validationTime: `${time}ms`,
         threshold: `${this.securityThresholds.validationTimeWarning}ms`,
       });
@@ -1215,9 +1216,9 @@ class JWTManager {
   _logSecurityEvent(event, data) {
     const logEntry = {
       event,
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
       data,
-      source: 'JWT_MANAGER',
+      source: "JWT_MANAGER",
       environment: config.NODE_ENV,
     };
 
@@ -1225,8 +1226,8 @@ class JWTManager {
     logger.security(event, logEntry);
 
     // Debug logging in development
-    if (config.isDevelopment() && config.logging.level === 'debug') {
-      logger.debug('JWT Security Event', logEntry);
+    if (config.isDevelopment() && config.logging.level === "debug") {
+      logger.debug("JWT Security Event", logEntry);
     }
   }
 }
@@ -1246,9 +1247,9 @@ const wrappedOperations = {
         payload,
         type,
         expiresIn,
-        options,
+        options
       );
-    },
+    }
   ),
 
   validateToken: asyncHandler(async (token, options) => {
@@ -1277,11 +1278,11 @@ const wrappedOperations = {
 };
 
 // Graceful shutdown handler
-process.on('SIGTERM', async () => {
+process.on("SIGTERM", async () => {
   await jwtManager.gracefulShutdown();
 });
 
-process.on('SIGINT', async () => {
+process.on("SIGINT", async () => {
   await jwtManager.gracefulShutdown();
 });
 

@@ -19,33 +19,34 @@
  * @version 1.0.0
  */
 
-const { PrismaClient } = require('@prisma/client');
-const config = require('./index');
-const logger = require('../utils/logger');
-const { ApiError, DatabaseError, ErrorHandler } = require('../utils/apiError');
-const { asyncHandler } = require('../utils/asyncHandler');
+const { PrismaClient } = require("@prisma/client");
+const config = require("./index");
+const logger = require("../utils/logger");
+const { generateTimestamp } = require("../utils/common");
+const { ApiError, DatabaseError, ErrorHandler } = require("../utils/apiError");
+const { asyncHandler } = require("../utils/asyncHandler");
 
 /**
  * Database Connection States
  */
 const CONNECTION_STATES = {
-  DISCONNECTED: 'disconnected',
-  CONNECTING: 'connecting',
-  CONNECTED: 'connected',
-  DISCONNECTING: 'disconnecting',
-  ERROR: 'error',
-  RECONNECTING: 'reconnecting',
+  DISCONNECTED: "disconnected",
+  CONNECTING: "connecting",
+  CONNECTED: "connected",
+  DISCONNECTING: "disconnecting",
+  ERROR: "error",
+  RECONNECTING: "reconnecting",
 };
 
 /**
  * Database Operation Types for logging
  */
 const OPERATION_TYPES = {
-  QUERY: 'query',
-  MUTATION: 'mutation',
-  TRANSACTION: 'transaction',
-  HEALTH_CHECK: 'health_check',
-  CLEANUP: 'cleanup',
+  QUERY: "query",
+  MUTATION: "mutation",
+  TRANSACTION: "transaction",
+  HEALTH_CHECK: "health_check",
+  CLEANUP: "cleanup",
 };
 
 /**
@@ -57,7 +58,7 @@ class DatabaseManager {
     this.prisma = null;
     this.connectionState = CONNECTION_STATES.DISCONNECTED;
     this.connectionAttempts = 0;
-    this.maxRetries = config.database.maxRetries || 3;
+    this.maxRetries = config.database?.maxRetries || 3;
     this.retryDelay = 5000; // 5 seconds
     this.healthCheckInterval = null;
     this.cleanupInterval = null;
@@ -77,8 +78,8 @@ class DatabaseManager {
 
     // Performance thresholds
     this.slowQueryThreshold = 1000; // 1 second
-    this.connectionTimeout = config.database.connectionTimeout || 10000;
-    this.queryTimeout = config.database.queryTimeout || 30000;
+    this.connectionTimeout = config.database?.connectionTimeout || 10000;
+    this.queryTimeout = config.database?.queryTimeout || 30000;
   }
 
   /**
@@ -94,11 +95,11 @@ class DatabaseManager {
     this.connectionAttempts++;
 
     try {
-      logger.info('Initializing database connection', {
+      logger.info("Initializing database connection", {
         attempt: this.connectionAttempts,
         maxRetries: this.maxRetries,
         environment: config.NODE_ENV,
-        poolSize: config.database.poolSize,
+        poolSize: config.database?.poolSize,
       });
 
       // Prisma Client Configuration
@@ -106,7 +107,7 @@ class DatabaseManager {
         // Datasource configuration
         datasources: {
           db: {
-            url: config.database.url,
+            url: config.database?.url || config.DATABASE_URL,
           },
         },
 
@@ -114,12 +115,10 @@ class DatabaseManager {
         log: this._getLogConfig(),
 
         // Error formatting
-        errorFormat: config.isDevelopment() ? 'pretty' : 'minimal',
+        errorFormat: config.isDevelopment() ? "pretty" : "minimal",
 
-        // Connection pool settings
-        ...(config.database.poolSize && {
-          connectionLimit: config.database.poolSize,
-        }),
+        // Connection pool settings are configured via DATABASE_URL
+        // No connectionLimit parameter needed here
       };
 
       // Initialize Prisma Client
@@ -144,9 +143,9 @@ class DatabaseManager {
       this.metrics.connectionUptime = new Date();
       this.connectionAttempts = 0; // Reset on successful connection
 
-      logger.info('Database connected successfully', {
-        poolSize: config.database.poolSize || 'default',
-        ssl: config.database.ssl,
+      logger.info("Database connected successfully", {
+        poolSize: config.database?.poolSize || "default",
+        ssl: config.database?.ssl,
         environment: config.NODE_ENV,
         uptime: 0,
       });
@@ -158,10 +157,10 @@ class DatabaseManager {
 
       const dbError = new DatabaseError(
         `Database initialization failed: ${error.message}`,
-        error,
+        error
       );
 
-      logger.error('Database initialization failed', {
+      logger.error("Database initialization failed", {
         error: dbError.toJSON(),
         attempt: this.connectionAttempts,
         maxRetries: this.maxRetries,
@@ -179,7 +178,7 @@ class DatabaseManager {
       }
 
       // Max retries exceeded
-      logger.error('Database connection failed after maximum retries', {
+      logger.error("Database connection failed after maximum retries", {
         attempts: this.connectionAttempts,
         maxRetries: this.maxRetries,
       });
@@ -197,32 +196,32 @@ class DatabaseManager {
     if (config.isDevelopment()) {
       return [
         {
-          emit: 'event',
-          level: 'query',
+          emit: "event",
+          level: "query",
         },
         {
-          emit: 'event',
-          level: 'error',
+          emit: "event",
+          level: "error",
         },
         {
-          emit: 'event',
-          level: 'info',
+          emit: "event",
+          level: "info",
         },
         {
-          emit: 'event',
-          level: 'warn',
+          emit: "event",
+          level: "warn",
         },
       ];
     }
 
     return [
       {
-        emit: 'event',
-        level: 'error',
+        emit: "event",
+        level: "error",
       },
       {
-        emit: 'event',
-        level: 'warn',
+        emit: "event",
+        level: "warn",
       },
     ];
   }
@@ -233,7 +232,7 @@ class DatabaseManager {
    */
   _setupQueryLogging() {
     // Query performance logging
-    this.prisma.$on('query', (e) => {
+    this.prisma.$on("query", (e) => {
       this.metrics.queriesExecuted++;
 
       const duration = e.duration;
@@ -241,21 +240,21 @@ class DatabaseManager {
 
       if (isSlowQuery) {
         this.metrics.slowQueries++;
-        logger.warn('Slow database query detected', {
+        logger.warn("Slow database query detected", {
           duration: `${duration}ms`,
           query:
-            e.query.substring(0, 200) + (e.query.length > 200 ? '...' : ''),
-          params: config.isDevelopment() ? e.params : '[REDACTED]',
+            e.query.substring(0, 200) + (e.query.length > 200 ? "..." : ""),
+          params: config.isDevelopment() ? e.params : "[REDACTED]",
           target: e.target,
           timestamp: e.timestamp,
         });
       }
 
       // Debug logging in development
-      if (config.isDevelopment() && config.logging.level === 'debug') {
-        logger.debug('Database query executed', {
+      if (config.isDevelopment() && config.LOG_LEVEL === "debug") {
+        logger.debug("Database query executed", {
           duration: `${duration}ms`,
-          query: e.query.substring(0, 100) + '...',
+          query: e.query.substring(0, 100) + "...",
           params: e.params,
           target: e.target,
         });
@@ -263,8 +262,8 @@ class DatabaseManager {
     });
 
     // Info logging
-    this.prisma.$on('info', (e) => {
-      logger.info('Database info', {
+    this.prisma.$on("info", (e) => {
+      logger.info("Database info", {
         message: e.message,
         target: e.target,
         timestamp: e.timestamp,
@@ -272,8 +271,8 @@ class DatabaseManager {
     });
 
     // Warning logging
-    this.prisma.$on('warn', (e) => {
-      logger.warn('Database warning', {
+    this.prisma.$on("warn", (e) => {
+      logger.warn("Database warning", {
         message: e.message,
         target: e.target,
         timestamp: e.timestamp,
@@ -286,12 +285,12 @@ class DatabaseManager {
    * @private
    */
   _setupErrorHandling() {
-    this.prisma.$on('error', (e) => {
+    this.prisma.$on("error", (e) => {
       this.metrics.errorsEncountered++;
 
       const dbError = new DatabaseError(`Database error: ${e.message}`, e);
 
-      logger.error('Database error occurred', {
+      logger.error("Database error occurred", {
         error: dbError.toJSON(),
         target: e.target,
         timestamp: e.timestamp,
@@ -312,17 +311,17 @@ class DatabaseManager {
    */
   _isConnectionError(error) {
     const connectionErrorCodes = [
-      'P1001', // Can't reach database server
-      'P1002', // Database server timeout
-      'P1003', // Database does not exist
-      'P1008', // Operations timed out
-      'P1017', // Server closed connection
+      "P1001", // Can't reach database server
+      "P1002", // Database server timeout
+      "P1003", // Database does not exist
+      "P1008", // Operations timed out
+      "P1017", // Server closed connection
     ];
 
     return (
       connectionErrorCodes.includes(error.code) ||
-      error.message.includes('connection') ||
-      error.message.includes('timeout')
+      error.message.includes("connection") ||
+      error.message.includes("timeout")
     );
   }
 
@@ -336,7 +335,7 @@ class DatabaseManager {
       this.connectionState = CONNECTION_STATES.RECONNECTING;
       this.metrics.reconnectAttempts++;
 
-      logger.warn('Database connection lost, attempting to reconnect', {
+      logger.warn("Database connection lost, attempting to reconnect", {
         error: error.message,
         reconnectAttempt: this.metrics.reconnectAttempts,
       });
@@ -350,9 +349,9 @@ class DatabaseManager {
       this.reconnectTimeout = setTimeout(async () => {
         try {
           await this.initialize();
-          logger.info('Database reconnection successful');
+          logger.info("Database reconnection successful");
         } catch (reconnectError) {
-          logger.error('Database reconnection failed', {
+          logger.error("Database reconnection failed", {
             error: reconnectError.message,
           });
         }
@@ -371,14 +370,14 @@ class DatabaseManager {
       const result = await this.prisma.$queryRaw`SELECT 1 as connection_test`;
 
       if (!result || result.length === 0) {
-        throw new Error('Connection test query returned no results');
+        throw new Error("Connection test query returned no results");
       }
 
-      logger.debug('Database connection test passed');
+      logger.debug("Database connection test passed");
     } catch (error) {
       throw new DatabaseError(
         `Database connection test failed: ${error.message}`,
-        error,
+        error
       );
     }
   }
@@ -393,13 +392,13 @@ class DatabaseManager {
     }
 
     // Health check interval from config
-    const interval = config.server.healthCheckInterval || 30000;
+    const interval = config.server?.healthCheckInterval || 30000;
 
     this.healthCheckInterval = setInterval(async () => {
       try {
         await this.healthCheck();
       } catch (error) {
-        logger.error('Database health check failed', {
+        logger.error("Database health check failed", {
           error: error.message,
           connectionState: this.connectionState,
         });
@@ -409,7 +408,7 @@ class DatabaseManager {
       }
     }, interval);
 
-    logger.debug('Database health monitoring started', {
+    logger.debug("Database health monitoring started", {
       interval: `${interval}ms`,
     });
   }
@@ -424,19 +423,19 @@ class DatabaseManager {
     }
 
     // Cleanup interval from config
-    const interval = config.auth.session.cleanupInterval || 3600000; // 1 hour
+    const interval = config.auth?.session?.cleanupInterval || 3600000; // 1 hour
 
     this.cleanupInterval = setInterval(async () => {
       try {
         await this._runCleanupTasks();
       } catch (error) {
-        logger.error('Database cleanup tasks failed', {
+        logger.error("Database cleanup tasks failed", {
           error: error.message,
         });
       }
     }, interval);
 
-    logger.debug('Database cleanup tasks scheduled', {
+    logger.debug("Database cleanup tasks scheduled", {
       interval: `${interval}ms`,
     });
   }
@@ -449,21 +448,36 @@ class DatabaseManager {
     const startTime = Date.now();
 
     try {
-      const [expiredSessions, expiredInvites] = await Promise.all([
-        this.cleanupExpiredSessions(),
-        this.cleanupExpiredInvites(),
-      ]);
+      // Only run cleanup if we have the required tables
+      let expiredSessions = 0;
+      let expiredInvites = 0;
+
+      try {
+        expiredSessions = await this.cleanupExpiredSessions();
+      } catch (error) {
+        logger.debug("Session cleanup skipped (table may not exist)", {
+          error: error.message,
+        });
+      }
+
+      try {
+        expiredInvites = await this.cleanupExpiredInvites();
+      } catch (error) {
+        logger.debug("Invite cleanup skipped (table may not exist)", {
+          error: error.message,
+        });
+      }
 
       const duration = Date.now() - startTime;
       this.metrics.cleanupOperations++;
 
-      logger.info('Database cleanup completed', {
+      logger.info("Database cleanup completed", {
         expiredSessions,
         expiredInvites,
         duration: `${duration}ms`,
       });
     } catch (error) {
-      logger.error('Database cleanup failed', {
+      logger.error("Database cleanup failed", {
         error: error.message,
         duration: `${Date.now() - startTime}ms`,
       });
@@ -485,16 +499,16 @@ class DatabaseManager {
       const responseTime = Date.now() - startTime;
       const uptime = this.metrics.connectionUptime
         ? Math.floor(
-            (Date.now() - this.metrics.connectionUptime.getTime()) / 1000,
+            (Date.now() - this.metrics.connectionUptime.getTime()) / 1000
           )
         : 0;
 
       const health = {
-        status: 'healthy',
+        status: "healthy",
         responseTime: `${responseTime}ms`,
         connectionState: this.connectionState,
         uptime: `${uptime}s`,
-        timestamp: new Date().toISOString(),
+        timestamp: generateTimestamp(),
         metrics: {
           queriesExecuted: this.metrics.queriesExecuted,
           transactionsExecuted: this.metrics.transactionsExecuted,
@@ -509,14 +523,14 @@ class DatabaseManager {
       const responseTime = Date.now() - startTime;
 
       const health = {
-        status: 'unhealthy',
+        status: "unhealthy",
         error: error.message,
         responseTime: `${responseTime}ms`,
         connectionState: this.connectionState,
-        timestamp: new Date().toISOString(),
+        timestamp: generateTimestamp(),
       };
 
-      throw new DatabaseError('Database health check failed', error);
+      throw new DatabaseError("Database health check failed", error);
     }
   }
 
@@ -526,20 +540,13 @@ class DatabaseManager {
    */
   async getMetrics() {
     try {
-      const [userCount, workspaceCount, membershipCount, activeSessionCount] =
-        await Promise.all([
-          this.prisma.user.count(),
-          this.prisma.workspace.count(),
-          this.prisma.membership.count(),
-          this.prisma.session.count({ where: { isActive: true } }),
-        ]);
-
-      return {
+      // Try to get metrics, but handle cases where tables don't exist
+      const metrics = {
         connection: {
           state: this.connectionState,
           uptime: this.metrics.connectionUptime
             ? Math.floor(
-                (Date.now() - this.metrics.connectionUptime.getTime()) / 1000,
+                (Date.now() - this.metrics.connectionUptime.getTime()) / 1000
               )
             : 0,
           lastHealthCheck: this.metrics.lastHealthCheck,
@@ -548,36 +555,54 @@ class DatabaseManager {
           queriesExecuted: this.metrics.queriesExecuted,
           transactionsExecuted: this.metrics.transactionsExecuted,
           slowQueries: this.metrics.slowQueries,
-          averageQueryTime:
-            this.metrics.queriesExecuted > 0
-              ? Math.round(
-                  this.metrics.totalQueryTime / this.metrics.queriesExecuted,
-                )
-              : 0,
         },
         errors: {
           total: this.metrics.errorsEncountered,
           reconnectAttempts: this.metrics.reconnectAttempts,
         },
         data: {
-          users: userCount,
-          workspaces: workspaceCount,
-          memberships: membershipCount,
-          activeSessions: activeSessionCount,
+          users: 0,
+          workspaces: 0,
+          memberships: 0,
+          activeSessions: 0,
         },
         cleanup: {
           operations: this.metrics.cleanupOperations,
         },
-        timestamp: new Date().toISOString(),
+        timestamp: generateTimestamp(),
       };
+
+      // Try to get data counts (may fail if tables don't exist)
+      try {
+        const [userCount, workspaceCount, membershipCount, activeSessionCount] =
+          await Promise.all([
+            this.prisma.user?.count() || 0,
+            this.prisma.workspace?.count() || 0,
+            this.prisma.membership?.count() || 0,
+            this.prisma.session?.count({ where: { isActive: true } }) || 0,
+          ]);
+
+        metrics.data = {
+          users: userCount,
+          workspaces: workspaceCount,
+          memberships: membershipCount,
+          activeSessions: activeSessionCount,
+        };
+      } catch (error) {
+        logger.debug("Could not get table counts (tables may not exist)", {
+          error: error.message,
+        });
+      }
+
+      return metrics;
     } catch (error) {
-      logger.error('Failed to get database metrics', {
+      logger.error("Failed to get database metrics", {
         error: error.message,
       });
 
       return {
         error: error.message,
-        timestamp: new Date().toISOString(),
+        timestamp: generateTimestamp(),
       };
     }
   }
@@ -611,7 +636,7 @@ class DatabaseManager {
         const duration = Date.now() - startTime;
         this.metrics.transactionsExecuted++;
 
-        logger.debug('Database transaction completed', {
+        logger.debug("Database transaction completed", {
           attempt,
           duration: `${duration}ms`,
           success: true,
@@ -621,7 +646,7 @@ class DatabaseManager {
       } catch (error) {
         const duration = Date.now() - startTime;
 
-        logger.warn('Database transaction failed', {
+        logger.warn("Database transaction failed", {
           attempt,
           maxRetries,
           duration: `${duration}ms`,
@@ -632,10 +657,10 @@ class DatabaseManager {
         if (attempt === maxRetries || !this._isRetryableError(error)) {
           const dbError = new DatabaseError(
             `Transaction failed after ${attempt} attempts: ${error.message}`,
-            error,
+            error
           );
 
-          logger.error('Database transaction failed permanently', {
+          logger.error("Database transaction failed permanently", {
             error: dbError.toJSON(),
             attempts: attempt,
           });
@@ -645,7 +670,7 @@ class DatabaseManager {
 
         // Wait before retry
         await new Promise((resolve) =>
-          setTimeout(resolve, retryDelay * attempt),
+          setTimeout(resolve, retryDelay * attempt)
         );
       }
     }
@@ -659,17 +684,17 @@ class DatabaseManager {
    */
   _isRetryableError(error) {
     const retryableErrorCodes = [
-      'P2034', // Transaction conflict
-      'P1008', // Operations timed out
-      'P1001', // Can't reach database server
-      'P1002', // Database server timeout
+      "P2034", // Transaction conflict
+      "P1008", // Operations timed out
+      "P1001", // Can't reach database server
+      "P1002", // Database server timeout
     ];
 
     return (
       retryableErrorCodes.includes(error.code) ||
-      error.message.includes('timeout') ||
-      error.message.includes('connection') ||
-      error.message.includes('conflict')
+      error.message.includes("timeout") ||
+      error.message.includes("connection") ||
+      error.message.includes("conflict")
     );
   }
 
@@ -686,7 +711,7 @@ class DatabaseManager {
       });
 
       if (result.count > 0) {
-        logger.info('Expired sessions cleaned up', {
+        logger.info("Expired sessions cleaned up", {
           count: result.count,
         });
       }
@@ -695,10 +720,10 @@ class DatabaseManager {
     } catch (error) {
       const dbError = new DatabaseError(
         `Session cleanup failed: ${error.message}`,
-        error,
+        error
       );
 
-      logger.error('Session cleanup failed', {
+      logger.error("Session cleanup failed", {
         error: dbError.toJSON(),
       });
 
@@ -719,7 +744,7 @@ class DatabaseManager {
       });
 
       if (result.count > 0) {
-        logger.info('Expired invites cleaned up', {
+        logger.info("Expired invites cleaned up", {
           count: result.count,
         });
       }
@@ -728,10 +753,10 @@ class DatabaseManager {
     } catch (error) {
       const dbError = new DatabaseError(
         `Invite cleanup failed: ${error.message}`,
-        error,
+        error
       );
 
-      logger.error('Invite cleanup failed', {
+      logger.error("Invite cleanup failed", {
         error: dbError.toJSON(),
       });
 
@@ -744,7 +769,7 @@ class DatabaseManager {
    * @returns {Promise<void>}
    */
   async gracefulShutdown() {
-    logger.info('Initiating database graceful shutdown');
+    logger.info("Initiating database graceful shutdown");
 
     this.connectionState = CONNECTION_STATES.DISCONNECTING;
 
@@ -768,10 +793,10 @@ class DatabaseManager {
     try {
       if (this.prisma) {
         await this.prisma.$disconnect();
-        logger.info('Database disconnected successfully');
+        logger.info("Database disconnected successfully");
       }
     } catch (error) {
-      logger.error('Error during database disconnection', {
+      logger.error("Error during database disconnection", {
         error: error.message,
       });
     } finally {
@@ -786,16 +811,20 @@ class DatabaseManager {
    */
   getConnectionInfo() {
     return {
-      url: config.database.url
-        ? config.database.url.replace(/:[^:@]*@/, ':***@')
-        : 'Not configured',
+      url:
+        config.database?.url || config.DATABASE_URL
+          ? (config.database?.url || config.DATABASE_URL).replace(
+              /:[^:@]*@/,
+              ":***@"
+            )
+          : "Not configured",
       environment: config.NODE_ENV,
       state: this.connectionState,
-      poolSize: config.database.poolSize || 'default',
-      ssl: config.database.ssl,
+      poolSize: config.database?.poolSize || "default",
+      ssl: config.database?.ssl,
       uptime: this.metrics.connectionUptime
         ? Math.floor(
-            (Date.now() - this.metrics.connectionUptime.getTime()) / 1000,
+            (Date.now() - this.metrics.connectionUptime.getTime()) / 1000
           )
         : 0,
       lastHealthCheck: this.metrics.lastHealthCheck,
@@ -847,12 +876,15 @@ const wrappedOperations = {
 
 // Auto-initialize database (except in test environment)
 let initializationPromise;
-if (config.NODE_ENV !== 'test') {
+if (config.NODE_ENV !== "test") {
   initializationPromise = databaseManager.initialize().catch((error) => {
-    logger.error('Database auto-initialization failed', {
+    logger.error("Database auto-initialization failed", {
       error: error.message,
     });
-    process.exit(1);
+    // Don't exit process in development - let it continue with warnings
+    if (config.NODE_ENV === "production") {
+      process.exit(1);
+    }
   });
 }
 
@@ -863,8 +895,8 @@ module.exports = {
     if (!databaseManager.prisma) {
       throw new ApiError(
         500,
-        'Database not initialized. Call initialize() first.',
-        'DATABASE_NOT_INITIALIZED',
+        "Database not initialized. Call initialize() first.",
+        "DATABASE_NOT_INITIALIZED"
       );
     }
     return databaseManager.prisma;
@@ -872,8 +904,17 @@ module.exports = {
 
   // Backward compatibility aliases
   get prisma() {
-    return this.client;
+    return databaseManager.prisma;
   },
+
+  get prismaAvailable() {
+    return databaseManager.connectionState === CONNECTION_STATES.CONNECTED;
+  },
+
+  // Legacy methods for compatibility
+  connectDatabase: wrappedOperations.initialize,
+  disconnectDatabase: wrappedOperations.gracefulShutdown,
+  checkDatabaseHealth: wrappedOperations.healthCheck,
 
   // Database manager instance
   manager: databaseManager,

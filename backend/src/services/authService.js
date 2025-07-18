@@ -17,12 +17,11 @@
  * @version 1.0.0
  */
 
-const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const {
   generateTokenPair,
   generateSpecialToken,
   TOKEN_TYPES,
+  validateToken,
 } = require('../config/jwt');
 const { client: prisma } = require('../config/database');
 const {
@@ -30,34 +29,25 @@ const {
   isPersonalEmail,
   normalizeEmail,
 } = require('../utils/domain');
+const { hashPassword, comparePassword } = require('../utils/encryption');
 const {
-  hashPassword,
-  comparePassword,
-  generateSecureToken,
-} = require('../utils/encryption');
-const {
-  sendVerificationEmail,
-  sendWelcomeEmail,
-  sendPasswordResetEmail,
-} = require('../config/email');
+  getOrCreateWorkspace,
+  assignMembershipRole,
+} = require('../utils/workspace');
+const { sendUserEmail } = require('../utils/email');
+const logger = require('../utils/logger');
+const { ApiError, ERROR_CODES, HTTP_STATUS } = require('../utils/apiError');
+const { ApiResponse } = require('../utils/apiResponse');
+const { asyncHandler } = require('../utils/asyncHandler');
+const { InputValidator } = require('../validations/input');
+const { BusinessValidator } = require('../validations/business');
+const { SecurityValidator } = require('../validations/security');
 const config = require('../config');
 
-/**
- * Authentication Result Types
- */
-const AUTH_RESULTS = {
-  SUCCESS: 'success',
-  INVALID_CREDENTIALS: 'invalid_credentials',
-  USER_NOT_FOUND: 'user_not_found',
-  USER_EXISTS: 'user_exists',
-  EMAIL_NOT_VERIFIED: 'email_not_verified',
-  ACCOUNT_INACTIVE: 'account_inactive',
-  PERSONAL_EMAIL_BLOCKED: 'personal_email_blocked',
-  WORKSPACE_CREATION_FAILED: 'workspace_creation_failed',
-  TOKEN_INVALID: 'token_invalid',
-  TOKEN_EXPIRED: 'token_expired',
-  PASSWORD_RESET_FAILED: 'password_reset_failed',
-};
+// Initialize validators
+const inputValidator = new InputValidator();
+const businessValidator = new BusinessValidator();
+const securityValidator = new SecurityValidator();
 
 /**
  * Authentication Events for audit logging
@@ -101,7 +91,7 @@ class AuthenticationService {
    * @returns {Promise<Object>} Registration result
    */
   async registerUser(userData, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { email, password, name, inviteToken = null } = userData;
       const {
         skipEmailVerification = false,
@@ -109,40 +99,94 @@ class AuthenticationService {
         ipAddress = null,
       } = options;
 
-      // Normalize and validate email
+      // Validate input data
+      const emailValidation = inputValidator.validateEmail(email);
+      if (!emailValidation.isValid) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Invalid email format',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'email', details: emailValidation.errors },
+        );
+      }
+
+      const passwordValidation = inputValidator.validatePassword(password);
+      if (!passwordValidation.isValid) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Password does not meet requirements',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'password', details: passwordValidation.errors },
+        );
+      }
+
+      // Business validation
+      const businessValidation = businessValidator.validateUserRegistration({
+        email,
+        password,
+        name,
+        inviteToken,
+      });
+      if (!businessValidation.isValid) {
+        throw new ApiError(
+          ERROR_CODES.BUSINESS_RULE_VIOLATION,
+          'Registration violates business rules',
+          HTTP_STATUS.BAD_REQUEST,
+          { details: businessValidation.errors },
+        );
+      }
+
+      // Security validation
+      const securityValidation = securityValidator.validateRegistrationSecurity(
+        {
+          email,
+          password,
+          ipAddress,
+          deviceId,
+        },
+      );
+      if (!securityValidation.isValid) {
+        throw new ApiError(
+          ERROR_CODES.SECURITY_VIOLATION,
+          'Registration blocked for security reasons',
+          HTTP_STATUS.FORBIDDEN,
+          { details: securityValidation.errors },
+        );
+      }
+
       const normalizedEmail = normalizeEmail(email);
       const domain = extractDomain(normalizedEmail);
 
-      // Check if user already exists
+      // Check if user exists
       const existingUser = await prisma.user.findUnique({
         where: { email: normalizedEmail },
       });
-
       if (existingUser) {
-        return {
-          success: false,
-          result: AUTH_RESULTS.USER_EXISTS,
-          message: 'User already exists with this email',
-        };
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_ALREADY_EXISTS,
+          'User already exists',
+          HTTP_STATUS.CONFLICT,
+          { field: 'email' },
+        );
       }
 
-      // Handle personal email domains
+      // Personal email policy
       if (isPersonalEmail(normalizedEmail) && !inviteToken) {
-        return {
-          success: false,
-          result: AUTH_RESULTS.PERSONAL_EMAIL_BLOCKED,
-          message:
-            'Personal email domains are not allowed. Please use your company email or accept an invitation.',
-        };
+        throw new ApiError(
+          ERROR_CODES.BUSINESS_RULE_VIOLATION,
+          'Personal email domains are not allowed',
+          HTTP_STATUS.FORBIDDEN,
+          { field: 'email', domain },
+        );
       }
 
       // Hash password
       const passwordHash = await hashPassword(password);
 
-      // Create user and workspace in transaction
+      // Transaction: workspace, user, membership
       const result = await prisma.$transaction(async (tx) => {
-        let workspace;
-        let isFirstUser = false;
+        let workspace,
+          isFirstUser = false;
 
         if (inviteToken) {
           // Handle invitation-based registration
@@ -152,11 +196,21 @@ class AuthenticationService {
           });
 
           if (!invite || invite.used || invite.expiresAt < new Date()) {
-            throw new Error('Invalid or expired invitation');
+            throw new ApiError(
+              ERROR_CODES.RESOURCE_NOT_FOUND,
+              'Invalid or expired invitation',
+              HTTP_STATUS.BAD_REQUEST,
+              { field: 'inviteToken' },
+            );
           }
 
           if (invite.email !== normalizedEmail) {
-            throw new Error('Email does not match invitation');
+            throw new ApiError(
+              ERROR_CODES.VALIDATION_ERROR,
+              'Email does not match invitation',
+              HTTP_STATUS.BAD_REQUEST,
+              { field: 'email' },
+            );
           }
 
           workspace = invite.workspace;
@@ -168,47 +222,20 @@ class AuthenticationService {
           });
         } else {
           // Handle domain-based workspace assignment
-          workspace = await tx.workspace.findUnique({
-            where: { domain },
-          });
-
-          if (!workspace) {
-            // Create new workspace
-            workspace = await tx.workspace.create({
-              data: {
-                name: this._generateWorkspaceName(domain),
-                domain,
-              },
-            });
-            isFirstUser = true;
-            this.authMetrics.workspacesCreated++;
-          }
+          workspace = await getOrCreateWorkspace(tx, domain);
+          isFirstUser =
+            (await tx.membership.count({
+              where: { workspaceId: workspace.id },
+            })) === 0;
         }
 
-        // Create user
         const user = await tx.user.create({
-          data: {
-            email: normalizedEmail,
-            name,
-            passwordHash,
-            emailVerified: skipEmailVerification,
-          },
+          data: { email: normalizedEmail, name, passwordHash },
         });
 
-        // Create membership
-        const existingMemberships = await tx.membership.count({
-          where: { workspaceId: workspace.id },
-        });
-
-        const role =
-          isFirstUser || existingMemberships === 0 ? 'ADMIN' : 'MEMBER';
-
+        const role = assignMembershipRole(isFirstUser);
         const membership = await tx.membership.create({
-          data: {
-            userId: user.id,
-            workspaceId: workspace.id,
-            role,
-          },
+          data: { userId: user.id, workspaceId: workspace.id, role },
         });
 
         return { user, workspace, membership, role, isFirstUser };
@@ -233,30 +260,16 @@ class AuthenticationService {
         },
       });
 
-      // Send verification email if needed
+      // Send emails
       if (!skipEmailVerification) {
-        const verificationToken = generateSpecialToken(
-          { userId: result.user.id, email: normalizedEmail },
-          TOKEN_TYPES.EMAIL_VERIFICATION,
-          '24h',
-        );
-
-        await sendVerificationEmail({
-          email: normalizedEmail,
-          name,
-          verificationToken,
-          workspaceName: result.workspace.name,
-          userId: result.user.id,
-          workspaceId: result.workspace.id,
+        await sendUserEmail('verification', {
+          user: result.user,
+          workspace: result.workspace,
         });
       } else {
-        // Send welcome email
-        await sendWelcomeEmail({
-          email: normalizedEmail,
-          name,
-          workspaceName: result.workspace.name,
-          workspaceId: result.workspace.id,
-          userId: result.user.id,
+        await sendUserEmail('welcome', {
+          user: result.user,
+          workspace: result.workspace,
         });
       }
 
@@ -266,20 +279,16 @@ class AuthenticationService {
       // Log registration event
       this._logAuthEvent(AUTH_EVENTS.USER_REGISTERED, {
         userId: result.user.id,
-        email: normalizedEmail,
+        email: result.user.email,
         workspaceId: result.workspace.id,
         role: result.role,
-        isFirstUser: result.isFirstUser,
-        domain,
         ipAddress,
         deviceId,
       });
 
-      return {
-        success: true,
-        result: AUTH_RESULTS.SUCCESS,
-        message: 'User registered successfully',
-        data: {
+      return ApiResponse.success(
+        'User registered successfully',
+        {
           user: {
             id: result.user.id,
             email: result.user.email,
@@ -295,25 +304,9 @@ class AuthenticationService {
           tokens: skipEmailVerification ? tokens : null,
           requiresEmailVerification: !skipEmailVerification,
         },
-      };
-    } catch (error) {
-      console.error('User registration error:', error);
-      this.authMetrics.failedAttempts++;
-
-      this._logAuthEvent(AUTH_EVENTS.SECURITY_EVENT, {
-        event: 'registration_failed',
-        error: error.message,
-        email: userData.email,
-        ipAddress: options.ipAddress,
-      });
-
-      return {
-        success: false,
-        result: AUTH_RESULTS.WORKSPACE_CREATION_FAILED,
-        message: 'Registration failed. Please try again.',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+        HTTP_STATUS.CREATED,
+      );
+    })();
   }
 
   /**
@@ -323,9 +316,47 @@ class AuthenticationService {
    * @returns {Promise<Object>} Authentication result
    */
   async authenticateUser(credentials, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { email, password } = credentials;
       const { deviceId = null, ipAddress = null } = options;
+
+      // Validate input
+      const emailValidation = inputValidator.validateEmail(email);
+      if (!emailValidation.isValid) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Invalid email format',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'email' },
+        );
+      }
+
+      const passwordValidation = inputValidator.validatePassword(password);
+      if (!passwordValidation.isValid) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Invalid password format',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'password' },
+        );
+      }
+
+      // Security validation
+      const securityValidation = securityValidator.validateSecurity({
+        email,
+        password,
+        ipAddress,
+        deviceId,
+      });
+      if (!securityValidation.isValid) {
+        this.authMetrics.failedAttempts++;
+        throw new ApiError(
+          ERROR_CODES.SECURITY_VIOLATION,
+          'Login blocked for security reasons',
+          HTTP_STATUS.FORBIDDEN,
+          { details: securityValidation.errors },
+        );
+      }
 
       const normalizedEmail = normalizeEmail(email);
 
@@ -351,21 +382,21 @@ class AuthenticationService {
 
       if (!user) {
         this.authMetrics.failedAttempts++;
-        return {
-          success: false,
-          result: AUTH_RESULTS.USER_NOT_FOUND,
-          message: 'Invalid email or password',
-        };
+        throw new ApiError(
+          ERROR_CODES.AUTHENTICATION_FAILED,
+          'Invalid email or password',
+          HTTP_STATUS.UNAUTHORIZED,
+        );
       }
 
       // Check if user has password (OAuth-only users don't have passwords)
       if (!user.passwordHash) {
         this.authMetrics.failedAttempts++;
-        return {
-          success: false,
-          result: AUTH_RESULTS.INVALID_CREDENTIALS,
-          message: 'Please sign in with your OAuth provider',
-        };
+        throw new ApiError(
+          ERROR_CODES.AUTHENTICATION_FAILED,
+          'Please sign in with your OAuth provider',
+          HTTP_STATUS.UNAUTHORIZED,
+        );
       }
 
       // Verify password
@@ -375,30 +406,30 @@ class AuthenticationService {
       );
       if (!isValidPassword) {
         this.authMetrics.failedAttempts++;
-        return {
-          success: false,
-          result: AUTH_RESULTS.INVALID_CREDENTIALS,
-          message: 'Invalid email or password',
-        };
+        throw new ApiError(
+          ERROR_CODES.AUTHENTICATION_FAILED,
+          'Invalid email or password',
+          HTTP_STATUS.UNAUTHORIZED,
+        );
       }
 
       // Check if email is verified
       if (!user.emailVerified) {
-        return {
-          success: false,
-          result: AUTH_RESULTS.EMAIL_NOT_VERIFIED,
-          message: 'Please verify your email before signing in',
-          data: { userId: user.id, email: user.email },
-        };
+        throw new ApiError(
+          ERROR_CODES.EMAIL_NOT_VERIFIED,
+          'Please verify your email before signing in',
+          HTTP_STATUS.FORBIDDEN,
+          { userId: user.id, email: user.email },
+        );
       }
 
       // Check if user is active
       if (!user.isActive) {
-        return {
-          success: false,
-          result: AUTH_RESULTS.ACCOUNT_INACTIVE,
-          message: 'Your account has been deactivated',
-        };
+        throw new ApiError(
+          ERROR_CODES.ACCOUNT_INACTIVE,
+          'Your account has been deactivated',
+          HTTP_STATUS.FORBIDDEN,
+        );
       }
 
       // Check workspace membership
@@ -406,11 +437,11 @@ class AuthenticationService {
         (m) => m.workspace.isActive,
       );
       if (!activeMembership) {
-        return {
-          success: false,
-          result: AUTH_RESULTS.ACCOUNT_INACTIVE,
-          message: 'No active workspace access found',
-        };
+        throw new ApiError(
+          ERROR_CODES.ACCESS_DENIED,
+          'No active workspace access found',
+          HTTP_STATUS.FORBIDDEN,
+        );
       }
 
       // Generate tokens
@@ -445,40 +476,18 @@ class AuthenticationService {
         deviceId,
       });
 
-      return {
-        success: true,
-        result: AUTH_RESULTS.SUCCESS,
-        message: 'Login successful',
-        data: {
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            emailVerified: user.emailVerified,
-          },
-          workspace: activeMembership.workspace,
-          role: activeMembership.role,
-          tokens,
+      return ApiResponse.success('Login successful', {
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          emailVerified: user.emailVerified,
         },
-      };
-    } catch (error) {
-      console.error('User authentication error:', error);
-      this.authMetrics.failedAttempts++;
-
-      this._logAuthEvent(AUTH_EVENTS.SECURITY_EVENT, {
-        event: 'login_failed',
-        error: error.message,
-        email: credentials.email,
-        ipAddress: options.ipAddress,
+        workspace: activeMembership.workspace,
+        role: activeMembership.role,
+        tokens,
       });
-
-      return {
-        success: false,
-        result: AUTH_RESULTS.INVALID_CREDENTIALS,
-        message: 'Authentication failed. Please try again.',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+    })();
   }
 
   /**
@@ -488,8 +497,17 @@ class AuthenticationService {
    * @returns {Promise<Object>} Refresh result
    */
   async refreshAccessToken(refreshToken, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { ipAddress = null } = options;
+
+      if (!refreshToken) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Refresh token is required',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'refreshToken' },
+        );
+      }
 
       // Find session with refresh token
       const session = await prisma.session.findUnique({
@@ -516,11 +534,11 @@ class AuthenticationService {
       });
 
       if (!session || !session.isActive || session.expiresAt < new Date()) {
-        return {
-          success: false,
-          result: AUTH_RESULTS.TOKEN_INVALID,
-          message: 'Invalid or expired refresh token',
-        };
+        throw new ApiError(
+          ERROR_CODES.TOKEN_INVALID,
+          'Invalid or expired refresh token',
+          HTTP_STATUS.UNAUTHORIZED,
+        );
       }
 
       const user = session.user;
@@ -529,11 +547,11 @@ class AuthenticationService {
       );
 
       if (!user.isActive || !activeMembership) {
-        return {
-          success: false,
-          result: AUTH_RESULTS.ACCOUNT_INACTIVE,
-          message: 'User account or workspace is inactive',
-        };
+        throw new ApiError(
+          ERROR_CODES.ACCOUNT_INACTIVE,
+          'User account or workspace is inactive',
+          HTTP_STATUS.FORBIDDEN,
+        );
       }
 
       // Generate new tokens
@@ -564,28 +582,8 @@ class AuthenticationService {
         ipAddress,
       });
 
-      return {
-        success: true,
-        result: AUTH_RESULTS.SUCCESS,
-        message: 'Token refreshed successfully',
-        data: { tokens },
-      };
-    } catch (error) {
-      console.error('Token refresh error:', error);
-
-      this._logAuthEvent(AUTH_EVENTS.SECURITY_EVENT, {
-        event: 'token_refresh_failed',
-        error: error.message,
-        ipAddress: options.ipAddress,
-      });
-
-      return {
-        success: false,
-        result: AUTH_RESULTS.TOKEN_INVALID,
-        message: 'Token refresh failed',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      return ApiResponse.success('Token refreshed successfully', { tokens });
+    })();
   }
 
   /**
@@ -595,7 +593,7 @@ class AuthenticationService {
    * @returns {Promise<Object>} Logout result
    */
   async logoutUser(refreshToken, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { userId = null, ipAddress = null } = options;
 
       if (refreshToken) {
@@ -615,21 +613,8 @@ class AuthenticationService {
         ipAddress,
       });
 
-      return {
-        success: true,
-        result: AUTH_RESULTS.SUCCESS,
-        message: 'Logout successful',
-      };
-    } catch (error) {
-      console.error('Logout error:', error);
-
-      return {
-        success: false,
-        result: AUTH_RESULTS.TOKEN_INVALID,
-        message: 'Logout failed',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      return ApiResponse.success('Logout successful');
+    })();
   }
 
   /**
@@ -638,12 +623,28 @@ class AuthenticationService {
    * @returns {Promise<Object>} Verification result
    */
   async verifyEmail(verificationToken) {
-    try {
+    return asyncHandler(async () => {
+      if (!verificationToken) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Verification token is required',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'verificationToken' },
+        );
+      }
+
       // Validate verification token
-      const { validateToken } = require('../config/jwt');
       const decoded = validateToken(verificationToken, {
         requiredType: TOKEN_TYPES.EMAIL_VERIFICATION,
       });
+
+      if (!decoded) {
+        throw new ApiError(
+          ERROR_CODES.TOKEN_INVALID,
+          'Invalid verification token',
+          HTTP_STATUS.BAD_REQUEST,
+        );
+      }
 
       // Update user email verification status
       const user = await prisma.user.update({
@@ -661,12 +662,9 @@ class AuthenticationService {
 
       // Send welcome email
       if (user.memberships.length > 0) {
-        await sendWelcomeEmail({
-          email: user.email,
-          name: user.name,
-          workspaceName: user.memberships[0].workspace.name,
-          workspaceId: user.memberships[0].workspace.id,
-          userId: user.id,
+        await sendUserEmail('welcome', {
+          user: user,
+          workspace: user.memberships[0].workspace,
         });
       }
 
@@ -680,29 +678,15 @@ class AuthenticationService {
         workspaceId: user.memberships[0]?.workspace.id,
       });
 
-      return {
-        success: true,
-        result: AUTH_RESULTS.SUCCESS,
-        message: 'Email verified successfully',
-        data: {
-          user: {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            emailVerified: user.emailVerified,
-          },
+      return ApiResponse.success('Email verified successfully', {
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          emailVerified: user.emailVerified,
         },
-      };
-    } catch (error) {
-      console.error('Email verification error:', error);
-
-      return {
-        success: false,
-        result: AUTH_RESULTS.TOKEN_INVALID,
-        message: 'Email verification failed',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      });
+    })();
   }
 
   /**
@@ -712,8 +696,20 @@ class AuthenticationService {
    * @returns {Promise<Object>} Reset request result
    */
   async requestPasswordReset(email, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { ipAddress = null } = options;
+
+      // Validate email
+      const emailValidation = inputValidator.validateEmail(email);
+      if (!emailValidation.isValid) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Invalid email format',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'email' },
+        );
+      }
+
       const normalizedEmail = normalizeEmail(email);
 
       // Find user
@@ -731,12 +727,9 @@ class AuthenticationService {
 
       if (!user) {
         // Don't reveal if user exists or not
-        return {
-          success: true,
-          result: AUTH_RESULTS.SUCCESS,
-          message:
-            'If an account with this email exists, a password reset link has been sent.',
-        };
+        return ApiResponse.success(
+          'If an account with this email exists, a password reset link has been sent.',
+        );
       }
 
       // Generate password reset token
@@ -747,13 +740,9 @@ class AuthenticationService {
       );
 
       // Send password reset email
-      await sendPasswordResetEmail({
-        email: normalizedEmail,
-        name: user.name,
-        resetToken,
-        workspaceName: user.memberships[0]?.workspace.name,
-        userId: user.id,
-        workspaceId: user.memberships[0]?.workspace.id,
+      await sendUserEmail('passwordReset', {
+        user: user,
+        resetToken: resetToken,
       });
 
       // Update metrics
@@ -766,22 +755,10 @@ class AuthenticationService {
         ipAddress,
       });
 
-      return {
-        success: true,
-        result: AUTH_RESULTS.SUCCESS,
-        message:
-          'If an account with this email exists, a password reset link has been sent.',
-      };
-    } catch (error) {
-      console.error('Password reset request error:', error);
-
-      return {
-        success: false,
-        result: AUTH_RESULTS.PASSWORD_RESET_FAILED,
-        message: 'Password reset request failed',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      return ApiResponse.success(
+        'If an account with this email exists, a password reset link has been sent.',
+      );
+    })();
   }
 
   /**
@@ -792,14 +769,41 @@ class AuthenticationService {
    * @returns {Promise<Object>} Reset result
    */
   async resetPassword(resetToken, newPassword, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { ipAddress = null } = options;
 
+      if (!resetToken) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Reset token is required',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'resetToken' },
+        );
+      }
+
+      // Validate new password
+      const passwordValidation = inputValidator.validatePassword(newPassword);
+      if (!passwordValidation.isValid) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Password does not meet requirements',
+          HTTP_STATUS.BAD_REQUEST,
+          { field: 'newPassword', details: passwordValidation.errors },
+        );
+      }
+
       // Validate reset token
-      const { validateToken } = require('../config/jwt');
       const decoded = validateToken(resetToken, {
         requiredType: TOKEN_TYPES.PASSWORD_RESET,
       });
+
+      if (!decoded) {
+        throw new ApiError(
+          ERROR_CODES.TOKEN_INVALID,
+          'Invalid or expired reset token',
+          HTTP_STATUS.BAD_REQUEST,
+        );
+      }
 
       // Hash new password
       const passwordHash = await hashPassword(newPassword);
@@ -823,38 +827,74 @@ class AuthenticationService {
         ipAddress,
       });
 
-      return {
-        success: true,
-        result: AUTH_RESULTS.SUCCESS,
-        message: 'Password reset successfully',
-      };
-    } catch (error) {
-      console.error('Password reset error:', error);
-
-      return {
-        success: false,
-        result: AUTH_RESULTS.PASSWORD_RESET_FAILED,
-        message: 'Password reset failed',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      return ApiResponse.success('Password reset successfully');
+    })();
   }
 
   /**
-   * Generate workspace name from domain
-   * @param {string} domain - Email domain
-   * @returns {string} Workspace name
-   * @private
+   * Generate authentication tokens for a user
+   * @param {Object} user - User object with workspace membership
+   * @param {Object} options - Token generation options
+   * @returns {Promise<Object>} Access and refresh tokens
    */
-  _generateWorkspaceName(domain) {
-    // Remove common TLD and capitalize
-    const name = domain
-      .replace(/\.(com|org|net|edu|gov|mil|int)$/, '')
-      .split('.')
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ');
+  async generateAuthTokens(user, options = {}) {
+    try {
+      const { ipAddress, userAgent, deviceId } = options;
 
-    return name || 'Workspace';
+      // Validate user has workspace membership
+      if (!user.memberships || user.memberships.length === 0) {
+        throw new ApiError(
+          403,
+          'No workspace access',
+          ERROR_CODES.NO_WORKSPACE_ACCESS,
+        );
+      }
+
+      // Get primary workspace (first active membership)
+      const primaryMembership = user.memberships[0];
+      const workspace = primaryMembership.workspace;
+
+      // Prepare token payload
+      const tokenPayload = {
+        sub: user.id,
+        email: user.email,
+        name: user.name,
+        workspace: {
+          id: workspace.id,
+          name: workspace.name,
+          domain: workspace.domain,
+          role: primaryMembership.role,
+        },
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          emailVerified: user.emailVerified,
+          role: primaryMembership.role,
+        },
+      };
+
+      // Generate token pair
+      const tokens = await generateTokenPair(tokenPayload, {
+        ipAddress,
+        deviceId,
+        userAgent,
+      });
+
+      logger.info('Auth tokens generated', {
+        userId: user.id,
+        workspaceId: workspace.id,
+        tokenType: 'token_pair',
+      });
+
+      return tokens;
+    } catch (error) {
+      logger.error('Failed to generate auth tokens', {
+        userId: user?.id,
+        error: error.message,
+      });
+      throw error;
+    }
   }
 
   /**
@@ -883,9 +923,9 @@ class AuthenticationService {
     };
 
     if (event === AUTH_EVENTS.SECURITY_EVENT) {
-      console.warn('🔐 Auth Security Event:', logEntry);
+      logger.warn('🔐 Auth Security Event:', logEntry);
     } else if (config.logging.level === 'debug') {
-      console.log('🔐 Auth Event:', logEntry);
+      logger.debug('🔐 Auth Event:', logEntry);
     }
 
     // In production, send to audit log service
@@ -918,11 +958,12 @@ module.exports = {
     authService.requestPasswordReset(email, options),
   resetPassword: (resetToken, newPassword, options) =>
     authService.resetPassword(resetToken, newPassword, options),
+  generateAuthTokens: (user, options) =>
+    authService.generateAuthTokens(user, options),
 
   // Utilities
   getMetrics: () => authService.getMetrics(),
 
   // Constants
-  AUTH_RESULTS,
   AUTH_EVENTS,
 };

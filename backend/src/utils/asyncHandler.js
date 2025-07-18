@@ -21,9 +21,10 @@
  * @version 1.0.0
  */
 
-const config = require('../config');
-const logger = require('./logger');
-const { ApiError, ErrorHandler } = require('./apiError');
+const config = require("../config");
+const logger = require("./logger");
+const { ApiError, ErrorHandler } = require("./apiError");
+const { generateTimestamp } = require("./common");
 
 /**
  * Performance Metrics Collector
@@ -63,11 +64,11 @@ class PerformanceMetrics {
     // Update timing metrics
     this.metrics.slowestExecution = Math.max(
       this.metrics.slowestExecution,
-      duration,
+      duration
     );
     this.metrics.fastestExecution = Math.min(
       this.metrics.fastestExecution,
-      duration,
+      duration
     );
 
     // Calculate average
@@ -159,7 +160,7 @@ class AsyncHandler {
       if (handlerOptions.enableTimeouts) {
         timeoutId = setTimeout(() => {
           performanceMetrics.recordTimeout();
-          logger.warn('Async handler timeout', {
+          logger.warn("Async handler timeout", {
             requestId: req.requestId,
             method: req.method,
             url: req.originalUrl,
@@ -170,10 +171,10 @@ class AsyncHandler {
 
           const timeoutError = new ApiError(
             408,
-            'Request timeout',
-            'REQUEST_TIMEOUT',
+            "Request timeout",
+            "REQUEST_TIMEOUT",
             { timeout: handlerOptions.defaultTimeout },
-            'medium',
+            "medium"
           );
 
           next(timeoutError);
@@ -184,10 +185,10 @@ class AsyncHandler {
       const executeAsync = async () => {
         try {
           // Add execution context
-          if (handlerOptions.enableCorrelation) {
+          if (handlerOptions.enableCorrelation && req) {
             req.executionContext = {
               startTime,
-              handlerId: require('crypto').randomUUID(),
+              handlerId: require("crypto").randomUUID(),
               timeout: handlerOptions.defaultTimeout,
             };
           }
@@ -240,12 +241,12 @@ class AsyncHandler {
       // Execute with Promise handling
       executeAsync().catch((error) => {
         // This catch block handles any errors in the executeAsync function itself
-        logger.error('Critical async handler error', {
+        logger.error("Critical async handler error", {
           error: error.message,
           stack: error.stack,
-          requestId: req.requestId,
-          method: req.method,
-          url: req.originalUrl,
+          requestId: req?.requestId || "unknown",
+          method: req?.method || "unknown",
+          url: req?.originalUrl || "unknown",
         });
 
         // Clear timeout
@@ -256,13 +257,16 @@ class AsyncHandler {
         // Create critical error
         const criticalError = new ApiError(
           500,
-          'Internal server error',
-          'CRITICAL_ASYNC_ERROR',
+          "Internal server error",
+          "CRITICAL_ASYNC_ERROR",
           config.isDevelopment() ? { originalError: error.message } : null,
-          'critical',
+          "critical"
         );
 
-        next(criticalError);
+        // Only call next if it exists
+        if (next && typeof next === "function") {
+          next(criticalError);
+        }
       });
     };
   }
@@ -276,26 +280,26 @@ class AsyncHandler {
       : 0;
 
     const logData = {
-      requestId: req.requestId,
-      method: req.method,
-      url: req.originalUrl,
+      requestId: req?.requestId || "unknown",
+      method: req?.method || "unknown",
+      url: req?.originalUrl || "unknown",
       executionTime,
-      memoryUsed: memoryUsed > 0 ? `${Math.round(memoryUsed / 1024)}KB` : 'N/A',
-      userId: req.user?.id,
-      workspaceId: req.workspace?.id,
+      memoryUsed: memoryUsed > 0 ? `${Math.round(memoryUsed / 1024)}KB` : "N/A",
+      userId: req?.user?.id || "unknown",
+      workspaceId: req?.workspace?.id || "unknown",
     };
 
     // Log slow requests
     if (executionTime > 1000) {
-      logger.warn('Slow async handler execution', logData);
+      logger.warn("Slow async handler execution", logData);
     } else if (config.isDevelopment()) {
-      logger.debug('Async handler performance', logData);
+      logger.debug("Async handler performance", logData);
     }
 
     // Log high memory usage
     if (memoryUsed > 10 * 1024 * 1024) {
       // 10MB threshold
-      logger.warn('High memory usage in async handler', logData);
+      logger.warn("High memory usage in async handler", logData);
     }
   }
 
@@ -308,7 +312,7 @@ class AsyncHandler {
 
     if (memoryUsed > memoryThreshold) {
       performanceMetrics.recordMemoryLeak();
-      logger.warn('Potential memory leak detected', {
+      logger.warn("Potential memory leak detected", {
         requestId: req.requestId,
         method: req.method,
         url: req.originalUrl,
@@ -325,29 +329,29 @@ class AsyncHandler {
    */
   logError(error, req, executionTime) {
     const errorContext = {
-      requestId: req.requestId,
-      method: req.method,
-      url: req.originalUrl,
+      requestId: req?.requestId || "unknown",
+      method: req?.method || "unknown",
+      url: req?.originalUrl || "unknown",
       executionTime,
-      userId: req.user?.id,
-      workspaceId: req.workspace?.id,
-      ip: req.ip,
-      userAgent: req.get('User-Agent'),
-      body: config.isDevelopment() ? req.body : '[REDACTED]',
-      query: req.query,
-      params: req.params,
-      headers: config.isDevelopment() ? req.headers : '[REDACTED]',
-      timestamp: new Date().toISOString(),
+      userId: req?.user?.id || "unknown",
+      workspaceId: req?.workspace?.id || "unknown",
+      ip: req?.ip || "unknown",
+      userAgent: req?.get ? req.get("User-Agent") : "unknown",
+      body: config.isDevelopment() ? req?.body : "[REDACTED]",
+      query: req?.query,
+      params: req?.params,
+      headers: config.isDevelopment() ? req?.headers : "[REDACTED]",
+      timestamp: generateTimestamp(),
     };
 
     // Log based on error type
     if (error instanceof ApiError) {
-      logger.error('API Error in async handler', {
+      logger.error("API Error in async handler", {
         ...errorContext,
         error: error.toJSON(),
       });
     } else {
-      logger.error('Unhandled error in async handler', {
+      logger.error("Unhandled error in async handler", {
         ...errorContext,
         error: {
           name: error.name,
@@ -490,7 +494,7 @@ const healthCheck = () => {
   const metrics = performanceMetrics.getMetrics();
 
   return {
-    status: metrics.errorRate < 0.1 ? 'healthy' : 'degraded',
+    status: metrics.errorRate < 0.1 ? "healthy" : "degraded",
     metrics: {
       totalRequests: metrics.totalRequests,
       errorRate: Math.round(metrics.errorRate * 100) / 100,

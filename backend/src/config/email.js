@@ -22,87 +22,88 @@
  * @version 1.0.0
  */
 
-const nodemailer = require('nodemailer');
-const fs = require('fs').promises;
-const path = require('path');
-const crypto = require('crypto');
+const nodemailer = require("nodemailer");
+const fs = require("fs").promises;
+const path = require("path");
+const crypto = require("crypto");
 
 // Import enhanced systems
-const config = require('./index');
-const logger = require('../utils/logger');
+const config = require("./index");
+const logger = require("../utils/logger");
+const { generateTimestamp } = require("../utils/common");
 const {
   ApiError,
   ValidationError,
   ExternalServiceError,
   ErrorHandler,
-} = require('../utils/apiError');
-const { asyncHandler } = require('../utils/asyncHandler');
+} = require("../utils/apiError");
+const { asyncHandler } = require("../utils/asyncHandler");
 
 /**
  * Email Types for different use cases
  */
 const EMAIL_TYPES = {
-  VERIFICATION: 'email_verification',
-  INVITATION: 'workspace_invitation',
-  PASSWORD_RESET: 'password_reset',
-  WELCOME: 'welcome',
-  NOTIFICATION: 'notification',
-  SECURITY_ALERT: 'security_alert',
-  WORKSPACE_DIGEST: 'workspace_digest',
-  ACCOUNT_LOCKED: 'account_locked',
-  LOGIN_ALERT: 'login_alert',
-  MEMBERSHIP_CHANGED: 'membership_changed',
-  WORKSPACE_CREATED: 'workspace_created',
+  VERIFICATION: "email_verification",
+  INVITATION: "workspace_invitation",
+  PASSWORD_RESET: "password_reset",
+  WELCOME: "welcome",
+  NOTIFICATION: "notification",
+  SECURITY_ALERT: "security_alert",
+  WORKSPACE_DIGEST: "workspace_digest",
+  ACCOUNT_LOCKED: "account_locked",
+  LOGIN_ALERT: "login_alert",
+  MEMBERSHIP_CHANGED: "membership_changed",
+  WORKSPACE_CREATED: "workspace_created",
 };
 
 /**
  * Email Priorities for queue processing
  */
 const EMAIL_PRIORITIES = {
-  CRITICAL: 'critical', // Security alerts, account locks
-  HIGH: 'high', // Password resets, verifications
-  MEDIUM: 'medium', // Invitations, welcome emails
-  LOW: 'low', // Notifications, digests
+  CRITICAL: "critical", // Security alerts, account locks
+  HIGH: "high", // Password resets, verifications
+  MEDIUM: "medium", // Invitations, welcome emails
+  LOW: "low", // Notifications, digests
 };
 
 /**
  * Email Provider Types
  */
 const EMAIL_PROVIDERS = {
-  SMTP: 'smtp',
-  SENDGRID: 'sendgrid',
-  SES: 'ses',
-  MAILGUN: 'mailgun',
+  SMTP: "smtp",
+  SENDGRID: "sendgrid",
+  SES: "ses",
+  MAILGUN: "mailgun",
 };
 
 /**
  * Email Status Types
  */
 const EMAIL_STATUS = {
-  QUEUED: 'queued',
-  PROCESSING: 'processing',
-  SENT: 'sent',
-  FAILED: 'failed',
-  BOUNCED: 'bounced',
-  DELIVERED: 'delivered',
-  OPENED: 'opened',
-  CLICKED: 'clicked',
+  QUEUED: "queued",
+  PROCESSING: "processing",
+  SENT: "sent",
+  FAILED: "failed",
+  BOUNCED: "bounced",
+  DELIVERED: "delivered",
+  OPENED: "opened",
+  CLICKED: "clicked",
 };
 
 /**
  * Email Events for audit logging
  */
 const EMAIL_EVENTS = {
-  EMAIL_QUEUED: 'EMAIL_QUEUED',
-  EMAIL_SENT: 'EMAIL_SENT',
-  EMAIL_FAILED: 'EMAIL_FAILED',
-  EMAIL_BOUNCED: 'EMAIL_BOUNCED',
-  EMAIL_DELIVERED: 'EMAIL_DELIVERED',
-  TEMPLATE_LOADED: 'TEMPLATE_LOADED',
-  TRANSPORTER_CONFIGURED: 'TRANSPORTER_CONFIGURED',
-  QUEUE_PROCESSED: 'QUEUE_PROCESSED',
-  RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
-  CLEANUP_COMPLETED: 'CLEANUP_COMPLETED',
+  EMAIL_QUEUED: "EMAIL_QUEUED",
+  EMAIL_SENT: "EMAIL_SENT",
+  EMAIL_FAILED: "EMAIL_FAILED",
+  EMAIL_BOUNCED: "EMAIL_BOUNCED",
+  EMAIL_DELIVERED: "EMAIL_DELIVERED",
+  TEMPLATE_LOADED: "TEMPLATE_LOADED",
+  TRANSPORTER_CONFIGURED: "TRANSPORTER_CONFIGURED",
+  QUEUE_PROCESSED: "QUEUE_PROCESSED",
+  RATE_LIMIT_EXCEEDED: "RATE_LIMIT_EXCEEDED",
+  CLEANUP_COMPLETED: "CLEANUP_COMPLETED",
 };
 
 /**
@@ -158,7 +159,7 @@ class EmailManager {
    */
   async initialize() {
     try {
-      logger.info('Initializing email system', {
+      logger.info("Initializing email system", {
         provider: config.email.provider,
         environment: config.NODE_ENV,
         rateLimit: this.maxEmailsPerHour,
@@ -169,13 +170,13 @@ class EmailManager {
       this.startQueueProcessor();
       this.startCleanupProcessor();
 
-      logger.info('Email system initialized successfully', {
+      logger.info("Email system initialized successfully", {
         provider: config.email.provider,
         templatesLoaded: this.templateCache.size,
         queueProcessorActive: !!this.queueProcessor,
       });
     } catch (error) {
-      logger.error('Email system initialization failed', {
+      logger.error("Email system initialization failed", {
         error: error.message,
         stack: error.stack,
         provider: config.email.provider,
@@ -183,11 +184,11 @@ class EmailManager {
 
       // In development, continue without email
       if (config.isDevelopment()) {
-        logger.warn('Running in development mode without email functionality');
+        logger.warn("Running in development mode without email functionality");
       } else {
         throw new ExternalServiceError(
-          'email',
-          'Email system initialization failed',
+          "email",
+          "Email system initialization failed"
         );
       }
     }
@@ -222,7 +223,7 @@ class EmailManager {
         configuration: this._getSafeTransporterConfig(),
       });
     } catch (error) {
-      logger.error('Email transporter setup failed', {
+      logger.error("Email transporter setup failed", {
         provider,
         error: error.message,
       });
@@ -238,7 +239,7 @@ class EmailManager {
 
     if (!smtpConfig.host || !smtpConfig.user || !smtpConfig.password) {
       throw new ValidationError(
-        'SMTP configuration incomplete - missing host, user, or password',
+        "SMTP configuration incomplete - missing host, user, or password"
       );
     }
 
@@ -263,11 +264,11 @@ class EmailManager {
     // Verify transporter
     await this.transporter.verify();
 
-    logger.info('SMTP transporter configured and verified', {
+    logger.info("SMTP transporter configured and verified", {
       host: smtpConfig.host,
       port: smtpConfig.port,
       secure: smtpConfig.secure,
-      user: smtpConfig.user.replace(/(.{3}).*(@.*)/, '$1***$2'), // Mask email
+      user: smtpConfig.user.replace(/(.{3}).*(@.*)/, "$1***$2"), // Mask email
     });
   }
 
@@ -278,7 +279,7 @@ class EmailManager {
     const sendgridConfig = config.email.sendgrid;
 
     if (!sendgridConfig?.apiKey) {
-      throw new ValidationError('SendGrid API key not configured');
+      throw new ValidationError("SendGrid API key not configured");
     }
 
     // TODO: Implement SendGrid integration
@@ -288,8 +289,8 @@ class EmailManager {
 
     throw new ApiError(
       501,
-      'SendGrid provider not yet implemented',
-      'PROVIDER_NOT_IMPLEMENTED',
+      "SendGrid provider not yet implemented",
+      "PROVIDER_NOT_IMPLEMENTED"
     );
   }
 
@@ -304,7 +305,7 @@ class EmailManager {
       !sesConfig?.secretAccessKey ||
       !sesConfig?.region
     ) {
-      throw new ValidationError('AWS SES configuration incomplete');
+      throw new ValidationError("AWS SES configuration incomplete");
     }
 
     // TODO: Implement AWS SES integration
@@ -318,8 +319,8 @@ class EmailManager {
 
     throw new ApiError(
       501,
-      'AWS SES provider not yet implemented',
-      'PROVIDER_NOT_IMPLEMENTED',
+      "AWS SES provider not yet implemented",
+      "PROVIDER_NOT_IMPLEMENTED"
     );
   }
 
@@ -330,14 +331,14 @@ class EmailManager {
     const mailgunConfig = config.email.mailgun;
 
     if (!mailgunConfig?.apiKey || !mailgunConfig?.domain) {
-      throw new ValidationError('Mailgun configuration incomplete');
+      throw new ValidationError("Mailgun configuration incomplete");
     }
 
     // TODO: Implement Mailgun integration
     throw new ApiError(
       501,
-      'Mailgun provider not yet implemented',
-      'PROVIDER_NOT_IMPLEMENTED',
+      "Mailgun provider not yet implemented",
+      "PROVIDER_NOT_IMPLEMENTED"
     );
   }
 
@@ -345,19 +346,19 @@ class EmailManager {
    * Load email templates from filesystem with caching
    */
   async loadEmailTemplates() {
-    const templatesDir = path.join(__dirname, '../templates/email');
+    const templatesDir = path.join(__dirname, "../templates/email");
 
     try {
       const templateFiles = await fs.readdir(templatesDir);
       let loadedCount = 0;
 
       for (const file of templateFiles) {
-        if (file.endsWith('.html')) {
-          const templateName = file.replace('.html', '');
+        if (file.endsWith(".html")) {
+          const templateName = file.replace(".html", "");
           const templatePath = path.join(templatesDir, file);
 
           try {
-            const templateContent = await fs.readFile(templatePath, 'utf8');
+            const templateContent = await fs.readFile(templatePath, "utf8");
             this.templateCache.set(templateName, templateContent);
             loadedCount++;
 
@@ -367,7 +368,7 @@ class EmailManager {
               size: templateContent.length,
             });
           } catch (error) {
-            logger.warn('Failed to load email template', {
+            logger.warn("Failed to load email template", {
               templateName,
               templatePath,
               error: error.message,
@@ -376,18 +377,18 @@ class EmailManager {
         }
       }
 
-      logger.info('Email templates loaded successfully', {
+      logger.info("Email templates loaded successfully", {
         templatesDir,
         loadedCount,
         totalFiles: templateFiles.length,
       });
     } catch (error) {
       logger.warn(
-        'Email templates directory not found, using fallback templates',
+        "Email templates directory not found, using fallback templates",
         {
           templatesDir,
           error: error.message,
-        },
+        }
       );
       this.loadFallbackTemplates();
     }
@@ -411,7 +412,7 @@ class EmailManager {
       this.templateCache.set(type, template);
     }
 
-    logger.info('Fallback email templates loaded', {
+    logger.info("Fallback email templates loaded", {
       templateCount: Object.keys(fallbackTemplates).length,
     });
   }
@@ -423,7 +424,7 @@ class EmailManager {
    */
   async sendVerificationEmail(params) {
     try {
-      this._validateEmailParams(params, ['email', 'name', 'verificationToken']);
+      this._validateEmailParams(params, ["email", "name", "verificationToken"]);
 
       const {
         email,
@@ -438,7 +439,9 @@ class EmailManager {
       return await this.queueEmail({
         type: EMAIL_TYPES.VERIFICATION,
         to: email,
-        subject: `Verify your email address - ${workspaceName || config.app.name}`,
+        subject: `Verify your email address - ${
+          workspaceName || config.app.name
+        }`,
         priority: EMAIL_PRIORITIES.HIGH,
         templateData: {
           name,
@@ -456,7 +459,7 @@ class EmailManager {
         },
       });
     } catch (error) {
-      logger.error('Failed to send verification email', {
+      logger.error("Failed to send verification email", {
         email: params.email,
         error: error.message,
       });
@@ -472,10 +475,10 @@ class EmailManager {
   async sendInvitationEmail(params) {
     try {
       this._validateEmailParams(params, [
-        'email',
-        'inviterName',
-        'workspaceName',
-        'inviteToken',
+        "email",
+        "inviterName",
+        "workspaceName",
+        "inviteToken",
       ]);
 
       const {
@@ -499,7 +502,7 @@ class EmailManager {
           workspaceName,
           inviteUrl,
           appName: config.app.name,
-          role: role || 'Member',
+          role: role || "Member",
           supportEmail: config.email.from.email,
           expiryDays: config.workspace.inviteExpiry / 24 || 7,
         },
@@ -512,7 +515,7 @@ class EmailManager {
         },
       });
     } catch (error) {
-      logger.error('Failed to send invitation email', {
+      logger.error("Failed to send invitation email", {
         email: params.email,
         workspaceName: params.workspaceName,
         error: error.message,
@@ -528,7 +531,7 @@ class EmailManager {
    */
   async sendPasswordResetEmail(params) {
     try {
-      this._validateEmailParams(params, ['email', 'name', 'resetToken']);
+      this._validateEmailParams(params, ["email", "name", "resetToken"]);
 
       const {
         email,
@@ -555,7 +558,7 @@ class EmailManager {
           ipAddress,
           expiryHours: 1,
           securityTip:
-            'If you did not request this password reset, please contact support immediately.',
+            "If you did not request this password reset, please contact support immediately.",
         },
         metadata: {
           userId,
@@ -566,7 +569,7 @@ class EmailManager {
         },
       });
     } catch (error) {
-      logger.error('Failed to send password reset email', {
+      logger.error("Failed to send password reset email", {
         email: params.email,
         error: error.message,
       });
@@ -581,7 +584,7 @@ class EmailManager {
    */
   async sendWelcomeEmail(params) {
     try {
-      this._validateEmailParams(params, ['email', 'name', 'workspaceName']);
+      this._validateEmailParams(params, ["email", "name", "workspaceName"]);
 
       const { email, name, workspaceName, workspaceId, userId, role } = params;
       const loginUrl = `${config.app.clientUrl}/login`;
@@ -596,7 +599,7 @@ class EmailManager {
           workspaceName,
           loginUrl,
           appName: config.app.name,
-          role: role || 'Member',
+          role: role || "Member",
           supportEmail: config.email.from.email,
           gettingStartedUrl: `${config.app.clientUrl}/getting-started`,
         },
@@ -608,7 +611,7 @@ class EmailManager {
         },
       });
     } catch (error) {
-      logger.error('Failed to send welcome email', {
+      logger.error("Failed to send welcome email", {
         email: params.email,
         workspaceName: params.workspaceName,
         error: error.message,
@@ -624,7 +627,7 @@ class EmailManager {
    */
   async sendSecurityAlertEmail(params) {
     try {
-      this._validateEmailParams(params, ['email', 'name', 'alertType']);
+      this._validateEmailParams(params, ["email", "name", "alertType"]);
 
       const {
         email,
@@ -650,7 +653,7 @@ class EmailManager {
           appName: config.app.name,
           supportEmail: config.email.from.email,
           ipAddress,
-          timestamp: new Date().toISOString(),
+          timestamp: generateTimestamp(),
           securityUrl: `${config.app.clientUrl}/security`,
         },
         metadata: {
@@ -662,7 +665,7 @@ class EmailManager {
         },
       });
     } catch (error) {
-      logger.error('Failed to send security alert email', {
+      logger.error("Failed to send security alert email", {
         email: params.email,
         alertType: params.alertType,
         error: error.message,
@@ -678,7 +681,7 @@ class EmailManager {
    */
   async sendAccountLockedEmail(params) {
     try {
-      this._validateEmailParams(params, ['email', 'name']);
+      this._validateEmailParams(params, ["email", "name"]);
 
       const {
         email,
@@ -698,10 +701,10 @@ class EmailManager {
         priority: EMAIL_PRIORITIES.CRITICAL,
         templateData: {
           name,
-          lockReason: lockReason || 'Multiple failed login attempts',
+          lockReason: lockReason || "Multiple failed login attempts",
           unlockTime: unlockTime
             ? new Date(unlockTime).toLocaleString()
-            : 'Contact support',
+            : "Contact support",
           workspaceName: workspaceName || config.app.name,
           appName: config.app.name,
           supportEmail: config.email.from.email,
@@ -717,7 +720,7 @@ class EmailManager {
         },
       });
     } catch (error) {
-      logger.error('Failed to send account locked email', {
+      logger.error("Failed to send account locked email", {
         email: params.email,
         error: error.message,
       });
@@ -741,8 +744,8 @@ class EmailManager {
         });
         throw new ApiError(
           429,
-          'Email rate limit exceeded',
-          'RATE_LIMIT_EXCEEDED',
+          "Email rate limit exceeded",
+          "RATE_LIMIT_EXCEEDED"
         );
       }
 
@@ -774,8 +777,8 @@ class EmailManager {
 
       return true;
     } catch (error) {
-      logger.error('Failed to queue email', {
-        emailData: { ...emailData, templateData: '[REDACTED]' },
+      logger.error("Failed to queue email", {
+        emailData: { ...emailData, templateData: "[REDACTED]" },
         error: error.message,
       });
       throw error;
@@ -811,9 +814,9 @@ class EmailManager {
       for (const emailJob of batch) {
         try {
           await this.processEmailJob(emailJob);
-          processedEmails.push({ id: emailJob.id, status: 'success' });
+          processedEmails.push({ id: emailJob.id, status: "success" });
         } catch (error) {
-          logger.error('Email processing failed', {
+          logger.error("Email processing failed", {
             emailId: emailJob.id,
             type: emailJob.type,
             to: emailJob.to,
@@ -827,13 +830,13 @@ class EmailManager {
             emailJob.scheduledAt = new Date(
               Date.now() +
                 this.processingConfig.retryDelay *
-                  Math.pow(2, emailJob.attempts - 1),
+                  Math.pow(2, emailJob.attempts - 1)
             );
             emailJob.status = EMAIL_STATUS.QUEUED;
             this.emailQueue.push(emailJob);
             this.emailMetrics.retries++;
 
-            processedEmails.push({ id: emailJob.id, status: 'retried' });
+            processedEmails.push({ id: emailJob.id, status: "retried" });
           } else {
             emailJob.status = EMAIL_STATUS.FAILED;
             this.failedJobs.set(emailJob.id, emailJob);
@@ -847,7 +850,7 @@ class EmailManager {
               attempts: emailJob.attempts,
             });
 
-            processedEmails.push({ id: emailJob.id, status: 'failed' });
+            processedEmails.push({ id: emailJob.id, status: "failed" });
           }
         }
       }
@@ -865,7 +868,7 @@ class EmailManager {
         results: processedEmails,
       });
     } catch (error) {
-      logger.error('Email queue processing failed', {
+      logger.error("Email queue processing failed", {
         error: error.message,
         queueLength: this.emailQueue.length,
       });
@@ -884,7 +887,7 @@ class EmailManager {
     try {
       // Mock email sending in development
       if (config.development.mockEmailSending) {
-        logger.info('Mock email sent', {
+        logger.info("Mock email sent", {
           emailId: emailJob.id,
           to: emailJob.to,
           subject: emailJob.subject,
@@ -899,15 +902,15 @@ class EmailManager {
       // Check if transporter is available
       if (!this.transporter) {
         throw new ExternalServiceError(
-          'email',
-          'Email transporter not configured',
+          "email",
+          "Email transporter not configured"
         );
       }
 
       // Render email template
       const htmlContent = this.renderTemplate(
         emailJob.type,
-        emailJob.templateData,
+        emailJob.templateData
       );
 
       // Prepare email options
@@ -920,10 +923,10 @@ class EmailManager {
         subject: emailJob.subject,
         html: htmlContent,
         headers: {
-          'X-Email-Type': emailJob.type,
-          'X-Email-ID': emailJob.id,
-          'X-Workspace-ID': emailJob.metadata?.workspaceId,
-          'X-Priority': emailJob.priority,
+          "X-Email-Type": emailJob.type,
+          "X-Email-ID": emailJob.id,
+          "X-Workspace-ID": emailJob.metadata?.workspaceId,
+          "X-Priority": emailJob.priority,
         },
       };
 
@@ -969,8 +972,8 @@ class EmailManager {
 
       // Replace template variables
       for (const [key, value] of Object.entries(data)) {
-        const regex = new RegExp(`{{${key}}}`, 'g');
-        rendered = rendered.replace(regex, value || '');
+        const regex = new RegExp(`{{${key}}}`, "g");
+        rendered = rendered.replace(regex, value || "");
       }
 
       // Add common variables
@@ -980,7 +983,7 @@ class EmailManager {
 
       return rendered;
     } catch (error) {
-      logger.error('Template rendering failed', {
+      logger.error("Template rendering failed", {
         templateType,
         error: error.message,
       });
@@ -1002,7 +1005,7 @@ class EmailManager {
       }
     }, this.processingConfig.processingInterval);
 
-    logger.info('Email queue processor started', {
+    logger.info("Email queue processor started", {
       interval: this.processingConfig.processingInterval,
       batchSize: this.processingConfig.batchSize,
     });
@@ -1020,7 +1023,7 @@ class EmailManager {
       await this.cleanupExpiredData();
     }, this.processingConfig.cleanupInterval);
 
-    logger.debug('Email cleanup processor started', {
+    logger.debug("Email cleanup processor started", {
       interval: this.processingConfig.cleanupInterval,
     });
   }
@@ -1063,13 +1066,13 @@ class EmailManager {
         remainingFailedJobs: this.failedJobs.size,
       });
 
-      logger.debug('Email cleanup completed', {
+      logger.debug("Email cleanup completed", {
         cleanedRateLimits,
         cleanedFailedJobs,
         duration,
       });
     } catch (error) {
-      logger.error('Email cleanup failed', {
+      logger.error("Email cleanup failed", {
         error: error.message,
         duration: Date.now() - startTime,
       });
@@ -1095,7 +1098,7 @@ class EmailManager {
       rateLimitedEmails: this.rateLimits.size,
       successRate: Math.round(successRate * 100) / 100,
       totalEmails,
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
     };
   }
 
@@ -1111,26 +1114,26 @@ class EmailManager {
       metrics.averageProcessingTime < 5000;
 
     return {
-      status: isHealthy ? 'healthy' : 'degraded',
+      status: isHealthy ? "healthy" : "degraded",
       checks: {
         successRate: {
-          status: metrics.successRate > 95 ? 'pass' : 'fail',
+          status: metrics.successRate > 95 ? "pass" : "fail",
           value: `${metrics.successRate}%`,
-          threshold: '95%',
+          threshold: "95%",
         },
         queueLength: {
-          status: metrics.queueLength < 100 ? 'pass' : 'warn',
+          status: metrics.queueLength < 100 ? "pass" : "warn",
           value: metrics.queueLength,
           threshold: 100,
         },
         processingTime: {
-          status: metrics.averageProcessingTime < 5000 ? 'pass' : 'warn',
+          status: metrics.averageProcessingTime < 5000 ? "pass" : "warn",
           value: `${metrics.averageProcessingTime}ms`,
-          threshold: '5000ms',
+          threshold: "5000ms",
         },
         transporter: {
-          status: this.transporter ? 'pass' : 'fail',
-          value: this.transporter ? 'configured' : 'not configured',
+          status: this.transporter ? "pass" : "fail",
+          value: this.transporter ? "configured" : "not configured",
         },
       },
       metrics: {
@@ -1139,7 +1142,7 @@ class EmailManager {
         successRate: metrics.successRate,
         queueLength: metrics.queueLength,
       },
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
     };
   }
 
@@ -1148,7 +1151,7 @@ class EmailManager {
    * @returns {Promise<void>}
    */
   async gracefulShutdown() {
-    logger.info('Email Manager shutting down gracefully');
+    logger.info("Email Manager shutting down gracefully");
 
     // Stop processors
     if (this.queueProcessor) {
@@ -1163,7 +1166,7 @@ class EmailManager {
 
     // Process remaining emails
     if (this.emailQueue.length > 0) {
-      logger.info('Processing remaining emails in queue', {
+      logger.info("Processing remaining emails in queue", {
         queueLength: this.emailQueue.length,
       });
       await this.processEmailQueue();
@@ -1179,7 +1182,7 @@ class EmailManager {
     this.rateLimits.clear();
     this.failedJobs.clear();
 
-    logger.info('Email Manager shutdown completed', {
+    logger.info("Email Manager shutdown completed", {
       finalMetrics: this.getMetrics(),
     });
   }
@@ -1202,7 +1205,7 @@ class EmailManager {
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(params.email)) {
-      throw new ValidationError('Invalid email format');
+      throw new ValidationError("Invalid email format");
     }
   }
 
@@ -1257,7 +1260,7 @@ class EmailManager {
           host: config.email.smtp.host,
           port: config.email.smtp.port,
           secure: config.email.smtp.secure,
-          user: config.email.smtp.user?.replace(/(.{3}).*(@.*)/, '$1***$2'),
+          user: config.email.smtp.user?.replace(/(.{3}).*(@.*)/, "$1***$2"),
         };
       default:
         return { provider };
@@ -1273,7 +1276,7 @@ class EmailManager {
   async _logEmailEvent(event, data) {
     const logEntry = {
       event,
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
       data: {
         ...data,
         // Remove sensitive data
@@ -1281,7 +1284,7 @@ class EmailManager {
         password: undefined,
         token: undefined,
       },
-      source: 'EMAIL_MANAGER',
+      source: "EMAIL_MANAGER",
       environment: config.NODE_ENV,
     };
 
@@ -1289,8 +1292,8 @@ class EmailManager {
     logger.email(event, logEntry.data);
 
     // Debug logging in development
-    if (config.isDevelopment() && config.logging.level === 'debug') {
-      logger.debug('Email Event', logEntry);
+    if (config.isDevelopment() && config.logging.level === "debug") {
+      logger.debug("Email Event", logEntry);
     }
   }
 
@@ -1459,11 +1462,11 @@ class EmailManager {
 const emailManager = new EmailManager();
 
 // Graceful shutdown handler
-process.on('SIGTERM', async () => {
+process.on("SIGTERM", async () => {
   await emailManager.gracefulShutdown();
 });
 
-process.on('SIGINT', async () => {
+process.on("SIGINT", async () => {
   await emailManager.gracefulShutdown();
 });
 

@@ -1,50 +1,46 @@
-/**
- * Key Features:
- * - Security middleware (Helmet, CORS, Rate limiting)
- * - Request parsing and validation
- * - Authentication and authorization
- * - Multi-tenant workspace scoping
- * - Comprehensive error handling
- * - API documentation integration
- * - Health monitoring endpoints
- *
- * @author AI-Persona Backend
- * @version 1.0.0
- */
-
 const express = require('express');
-const helmet = require('helmet');
-const cors = require('cors');
 const morgan = require('morgan');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const passport = require('passport');
-const rateLimit = require('express-rate-limit');
 const slowDown = require('express-slow-down');
 
 // Import configurations
 const config = require('./config');
-const { helmetConfig } = require('./security/helmet');
-const { corsConfig } = require('./security/cors');
-const { rateLimitConfig } = require('./security/rateLimit');
-
+const { helmetMiddleware } = require('./security/helmet');
+const { corsMiddleware } = require('./security/cors');
+const {
+  rateLimitManager,
+  general,
+  auth,
+  api,
+  upload,
+  RATE_LIMIT_TIERS,
+  RATE_LIMIT_TYPES,
+  createRateLimiter,
+} = require('./security/rateLimit');
+const swaggerUi = require('swagger-ui-express');
+const YAML = require('yamljs');
 // Import utilities
 const logger = require('./utils/logger');
-const { ApiError } = require('./utils/apiError');
-const { ApiResponse, responseMiddleware } = require('./utils/apiResponse');
-const asyncHandler = require('./utils/asyncHandler');
-const { validateSecurity } = require('./middlewares/validation');
-
-// Import routes
-const routes = require('./routes');
+const { ApiError, errorHandler } = require('./utils/apiError');
+const {
+  ApiResponse,
+  SuccessResponse,
+  responseMiddleware,
+} = require('./utils/apiResponse');
+const { asyncHandler } = require('./utils/asyncHandler');
+const { middleware: validationMiddleware } = require('./validations');
 
 // Import database
-const { prisma } = require('./config/database');
+const { checkDatabaseHealth } = require('./config/database');
 
 /**
  * Create Express Application
  */
 const app = express();
+
+const swaggerDocument = YAML.load('./docs/swagger.yaml');
 
 /**
  * Trust proxy settings for production deployment
@@ -54,27 +50,43 @@ app.set('trust proxy', config.server.trustProxy);
 
 /**
  * Security Middleware
- * Applied early in the middleware stack for maximum protection
  */
 
 // Helmet - Security headers
-app.use(helmet(helmetConfig));
+app.use(helmetMiddleware);
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 
 // CORS - Cross-Origin Resource Sharing
-app.use(cors(corsConfig));
+app.use(corsMiddleware);
 
-// Rate limiting - Prevent abuse and DDoS attacks
-app.use(rateLimit(rateLimitConfig.global));
+// Enterprise Rate Limiting - Multi-tier rate limiting system
+// Apply general rate limiting to all API routes
+app.use('/api/', general);
 
-// Speed limiting - Slow down suspicious requests
+// Apply specific rate limiting to different endpoint categories
+// Note: More specific routes should be applied before general routes
+app.use('/api/*/auth', auth);
+app.use('/api/*/upload', upload);
+
+// Create development-friendly rate limiter for health checks
+const healthLimiter = createRateLimiter({
+  tier: RATE_LIMIT_TIERS.ADMIN,
+  type: RATE_LIMIT_TYPES.GENERAL,
+  customMessage: 'Health check rate limit exceeded',
+});
+app.use('/health', healthLimiter);
+
+// Speed limiting - Slow down suspicious requests (fixed configuration)
 app.use(
   slowDown({
     windowMs: 15 * 60 * 1000, // 15 minutes
     delayAfter: 100, // Allow 100 requests per windowMs without delay
-    delayMs: 500, // Add 500ms delay per request after delayAfter
+    delayMs: () => 500, // Fixed: Use function format for new version
     maxDelayMs: 20000, // Maximum delay of 20 seconds
     skipSuccessfulRequests: true,
     skipFailedRequests: false,
+    validate: { delayMs: false }, // Disable warning
   }),
 );
 
@@ -119,17 +131,13 @@ app.use(
 app.use(cookieParser(config.security.cookieSecret));
 
 // Request logging
-if (config.isDevelopment()) {
-  app.use(morgan('dev'));
-} else {
-  app.use(
-    morgan('combined', {
-      stream: {
-        write: (message) => logger.info(message.trim()),
-      },
-    }),
-  );
-}
+app.use(
+  morgan(config.isProduction() ? 'combined' : 'dev', {
+    stream: {
+      write: (message) => logger.http(message.trim()),
+    },
+  }),
+);
 
 /**
  * Authentication Setup
@@ -138,15 +146,16 @@ if (config.isDevelopment()) {
 // Initialize Passport
 app.use(passport.initialize());
 
-// Load Passport strategies
-require('./config/auth')(passport);
+// Initialize authentication strategies
+const { initialize: initializeAuth } = require('./config/auth');
+initializeAuth();
 
 /**
  * Security Validation Middleware
  * Checks for common security threats in all requests
  */
 app.use(
-  validateSecurity({
+  validationMiddleware.validateSecurity({
     checkSQLInjection: true,
     checkXSS: true,
     checkCommandInjection: true,
@@ -164,7 +173,8 @@ app.use(
     req.requestId = require('crypto').randomUUID();
 
     // Add request timestamp
-    req.requestTime = new Date().toISOString();
+    req.requestTime = generateTimestamp();
+    req.startTime = Date.now();
 
     // Add client IP (considering proxy)
     req.clientIp = req.ip || req.connection.remoteAddress;
@@ -204,6 +214,27 @@ app.use(
 app.use(responseMiddleware);
 
 /**
+ * Rate Limiting Monitoring Middleware
+ * Adds rate limiting metrics to request context
+ */
+app.use((req, res, next) => {
+  // Add rate limiting metrics to request context
+  if (req.context) {
+    req.context.rateLimitMetrics = rateLimitManager.getMetrics();
+  }
+
+  // Add rate limiting info to response headers for debugging
+  if (config.isDevelopment()) {
+    res.set(
+      'X-RateLimit-Metrics',
+      JSON.stringify(rateLimitManager.getMetrics()),
+    );
+  }
+
+  next();
+});
+
+/**
  * Health Check Endpoints
  * Essential for monitoring and load balancer health checks
  */
@@ -212,13 +243,24 @@ app.get(
   asyncHandler(async (req, res) => {
     const health = {
       status: 'healthy',
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
       uptime: process.uptime(),
       environment: config.NODE_ENV,
       version: process.env.npm_package_version || '1.0.0',
+      memory: process.memoryUsage(),
+      requestId: req.requestId,
     };
 
-    res.success(health, 'Health check successful');
+    logger.info('Health check requested', {
+      requestId: req.requestId,
+      ip: req.clientIp,
+      userAgent: req.userAgent,
+    });
+
+    return new SuccessResponse(health, 'Health check successful').send(
+      res,
+      req,
+    );
   }),
 );
 
@@ -228,50 +270,89 @@ app.get(
     const startTime = Date.now();
 
     // Check database connection
-    let dbStatus = 'healthy';
-    let dbResponseTime = 0;
+    let dbHealth = { status: 'healthy', responseTime: 0 };
 
     try {
       const dbStart = Date.now();
-      await prisma.$queryRaw`SELECT 1`;
-      dbResponseTime = Date.now() - dbStart;
+      const dbResult = await checkDatabaseHealth();
+      dbHealth = {
+        status: dbResult.status,
+        responseTime: Date.now() - dbStart,
+      };
     } catch (error) {
-      dbStatus = 'unhealthy';
+      dbHealth = {
+        status: 'unhealthy',
+        error: error.message,
+        responseTime: Date.now() - startTime,
+      };
       logger.error('Database health check failed:', error);
     }
 
     const health = {
-      status: dbStatus === 'healthy' ? 'healthy' : 'degraded',
-      timestamp: new Date().toISOString(),
+      status: dbHealth.status === 'healthy' ? 'healthy' : 'degraded',
+      timestamp: generateTimestamp(),
       uptime: process.uptime(),
       environment: config.NODE_ENV,
       version: process.env.npm_package_version || '1.0.0',
       checks: {
-        database: {
-          status: dbStatus,
-          responseTime: `${dbResponseTime}ms`,
-        },
+        database: dbHealth,
         memory: {
           used: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`,
-          total: `${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)}MB`,
+          total: `${Math.round(
+            process.memoryUsage().heapTotal / 1024 / 1024,
+          )}MB`,
         },
         cpu: {
           usage: process.cpuUsage(),
         },
       },
       responseTime: `${Date.now() - startTime}ms`,
+      requestId: req.requestId,
     };
+
+    logger.info('Detailed health check requested', {
+      requestId: req.requestId,
+      ip: req.clientIp,
+      userAgent: req.userAgent,
+      dbStatus: dbHealth.status,
+    });
 
     const statusCode = health.status === 'healthy' ? 200 : 503;
 
-    // Use enhanced response method with automatic status code handling
     if (health.status === 'healthy') {
-      res.success(health, 'Detailed health check');
+      return new SuccessResponse(
+        health,
+        'Detailed health check successful',
+      ).send(res, req);
     } else {
-      res
-        .status(statusCode)
-        .json(new ApiResponse(statusCode, health, 'Detailed health check'));
+      return new ApiResponse(
+        statusCode,
+        health,
+        'Detailed health check - system degraded',
+      ).send(res, req);
     }
+  }),
+);
+
+/**
+ * Rate Limiting Status Endpoint
+ * Provides rate limiting metrics and status information
+ */
+app.get(
+  '/rate-limit-status',
+  asyncHandler(async (req, res) => {
+    const metrics = rateLimitManager.getMetrics();
+
+    logger.info('Rate limit status requested', {
+      requestId: req.requestId,
+      ip: req.clientIp,
+      userAgent: req.userAgent,
+    });
+
+    return new SuccessResponse(
+      metrics,
+      'Rate limiting status retrieved successfully',
+    ).send(res, req);
   }),
 );
 
@@ -279,143 +360,56 @@ app.get(
  * API Routes
  * All application routes are mounted here
  */
-app.use('/api', routes);
+app.use(config.API_PREFIX, require('./routes'));
 
 /**
  * API Documentation
  * Swagger/OpenAPI documentation endpoint
  */
-if (config.isDevelopment() || config.docs.enabled) {
-  const swaggerUi = require('swagger-ui-express');
-  const swaggerSpec = require('./docs/swagger');
-
-  app.use(
-    '/api-docs',
-    swaggerUi.serve,
-    swaggerUi.setup(swaggerSpec, {
-      explorer: true,
-      customCss: '.swagger-ui .topbar { display: none }',
-      customSiteTitle: 'AI-Persona API Documentation',
-    }),
-  );
-
-  // JSON endpoint for API specification
-  app.get('/api-docs.json', (req, res) => {
-    res.setHeader('Content-Type', 'application/json');
-    res.send(swaggerSpec);
-  });
-}
+// TODO: Implement when API documentation is ready
+// if (config.isDevelopment() || config.docs.enabled) {
+//   const swaggerUi = require('swagger-ui-express');
+//   const swaggerSpec = require('./docs/swagger');
+//   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// }
 
 /**
  * 404 Handler
  * Handles requests to non-existent endpoints
  */
-app.use('*', (req, res, next) => {
-  const error = new ApiError(
-    404,
-    `Route ${req.originalUrl} not found`,
-    'ROUTE_NOT_FOUND',
-  );
+app.use(
+  '*',
+  asyncHandler(async (req, res) => {
+    logger.warn('Route not found', {
+      method: req.method,
+      url: req.originalUrl,
+      ip: req.clientIp,
+      userAgent: req.userAgent,
+      requestId: req.requestId,
+    });
 
-  logger.warn('Route not found:', {
-    method: req.method,
-    url: req.originalUrl,
-    ip: req.clientIp,
-    userAgent: req.userAgent,
-  });
-
-  next(error);
-});
+    throw new ApiError(
+      404,
+      'ROUTE_NOT_FOUND',
+      `Route ${req.originalUrl} not found`,
+    );
+  }),
+);
 
 /**
  * Global Error Handler
  * Centralized error handling for the entire application
  */
-app.use((error, req, res, next) => {
-  // Set default error values
-  let statusCode = error.statusCode || 500;
-  let message = error.message || 'Internal Server Error';
-  let errorCode = error.code || 'INTERNAL_ERROR';
+app.use(errorHandler);
 
-  // Handle specific error types
-  if (error.name === 'ValidationError') {
-    statusCode = 400;
-    message = 'Validation failed';
-    errorCode = 'VALIDATION_ERROR';
-  } else if (error.name === 'UnauthorizedError') {
-    statusCode = 401;
-    message = 'Unauthorized access';
-    errorCode = 'UNAUTHORIZED';
-  } else if (error.name === 'JsonWebTokenError') {
-    statusCode = 401;
-    message = 'Invalid token';
-    errorCode = 'INVALID_TOKEN';
-  } else if (error.name === 'TokenExpiredError') {
-    statusCode = 401;
-    message = 'Token expired';
-    errorCode = 'TOKEN_EXPIRED';
-  } else if (error.code === 'P2002') {
-    // Prisma unique constraint violation
-    statusCode = 409;
-    message = 'Resource already exists';
-    errorCode = 'DUPLICATE_RESOURCE';
+/**
+ * Handle 404 for static files
+ */
+app.use((req, res, next) => {
+  if (req.path.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg)$/)) {
+    return res.status(404).end();
   }
-
-  // Log error details
-  const errorLog = {
-    requestId: req.requestId,
-    error: {
-      name: error.name,
-      message: error.message,
-      code: errorCode,
-      statusCode,
-      stack: error.stack,
-    },
-    request: {
-      method: req.method,
-      url: req.originalUrl,
-      ip: req.clientIp,
-      userAgent: req.userAgent,
-      body: req.body,
-      query: req.query,
-      params: req.params,
-    },
-    user: req.user
-      ? {
-          id: req.user.id,
-          email: req.user.email,
-          workspaceId: req.user.workspaceId,
-        }
-      : null,
-    timestamp: new Date().toISOString(),
-  };
-
-  // Log based on severity
-  if (statusCode >= 500) {
-    logger.error('Server error:', errorLog);
-  } else if (statusCode >= 400) {
-    logger.warn('Client error:', errorLog);
-  }
-
-  // Prepare error response
-  const errorResponse = {
-    success: false,
-    error: {
-      code: errorCode,
-      message,
-      statusCode,
-      timestamp: new Date().toISOString(),
-      requestId: req.requestId,
-    },
-  };
-
-  // Add error details in development
-  if (config.isDevelopment()) {
-    errorResponse.error.stack = error.stack;
-    errorResponse.error.details = error.details || null;
-  }
-
-  res.status(statusCode).json(errorResponse);
+  next();
 });
 
 module.exports = app;

@@ -16,16 +16,50 @@
  * @version 1.0.0
  */
 
-const cors = require('cors');
-const config = require('../config');
+const cors = require("cors");
+const config = require("../config");
+const { generateTimestamp, sanitizeSensitiveData } = require("../utils/common");
 
 /**
  * CORS Policy Types
  */
 const CORS_POLICIES = {
-  STRICT: 'strict', // Only configured origins
-  PERMISSIVE: 'permissive', // Allow common development origins
-  CUSTOM: 'custom', // Workspace-specific origins
+  STRICT: "strict", // Only configured origins
+  PERMISSIVE: "permissive", // Allow common development origins
+  CUSTOM: "custom", // Workspace-specific origins
+};
+
+/**
+ * Base CORS configuration template
+ */
+const BASE_CORS_CONFIG = {
+  credentials: true,
+  optionsSuccessStatus: 200,
+  preflightContinue: false,
+  allowedHeaders: [
+    "Origin",
+    "X-Requested-With",
+    "Content-Type",
+    "Accept",
+    "Authorization",
+    "X-API-Key",
+    "X-Workspace-ID",
+    "X-Device-ID",
+    "X-Request-ID",
+    "Cache-Control",
+    "Pragma",
+  ],
+  exposedHeaders: [
+    "X-Total-Count",
+    "X-Page-Count",
+    "X-Current-Page",
+    "X-Per-Page",
+    "X-Rate-Limit-Remaining",
+    "X-Rate-Limit-Reset",
+    "X-Request-ID",
+  ],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+  maxAge: 86400, // 24 hours
 };
 
 /**
@@ -54,25 +88,32 @@ class CORSManager {
     const origins = [];
 
     // Add configured origins
-    if (config.security.cors.origin) {
+    if (config.security?.cors?.origin) {
       origins.push(...config.security.cors.origin);
     }
 
     // Add environment-specific origins
     if (config.isDevelopment()) {
       origins.push(
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'http://localhost:3002',
-        'http://127.0.0.1:3000',
-        'http://127.0.0.1:3001',
-        'http://127.0.0.1:3002',
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3002"
       );
     }
 
     // Add client URL from config
-    if (config.app.clientUrl) {
+    if (config.app?.clientUrl) {
       origins.push(config.app.clientUrl);
+    }
+
+    // Add frontend URL from config
+    if (config.FRONTEND_URL) {
+      origins.push(config.FRONTEND_URL);
     }
 
     // Remove duplicates and empty values
@@ -86,9 +127,58 @@ class CORSManager {
   buildBlockedOrigins() {
     return [
       // Add known malicious domains or patterns here
-      'null', // Block null origin
-      'file://', // Block file protocol
+      "null", // Block null origin
+      "file://", // Block file protocol
     ];
+  }
+
+  /**
+   * Check if origin matches pattern (with wildcard support)
+   * @param {string} origin - Origin to check
+   * @param {string} pattern - Pattern to match against
+   * @returns {boolean} Whether origin matches pattern
+   */
+  matchesPattern(origin, pattern) {
+    if (pattern.includes("*")) {
+      const regexPattern = pattern.replace(/\*/g, ".*");
+      return new RegExp(`^${regexPattern}$`).test(origin);
+    }
+    return origin === pattern;
+  }
+
+  /**
+   * Check if origin is explicitly blocked
+   * @param {string} origin - Origin to check
+   * @returns {boolean} Whether origin is blocked
+   */
+  isOriginBlocked(origin) {
+    return this.blockedOrigins.some((blocked) =>
+      this.matchesPattern(origin, blocked)
+    );
+  }
+
+  /**
+   * Check if origin is in allowed list
+   * @param {string} origin - Origin to check
+   * @returns {boolean} Whether origin is allowed
+   */
+  isOriginAllowed(origin) {
+    return this.allowedOrigins.some((allowed) =>
+      this.matchesPattern(origin, allowed)
+    );
+  }
+
+  /**
+   * Check if origin is a custom domain for a workspace
+   * @param {string} origin - Origin to check
+   * @param {Object} req - Express request object
+   * @returns {boolean} Whether custom domain is allowed
+   */
+  isCustomDomainAllowed(origin, req) {
+    // TODO: Implement workspace custom domain validation
+    // This would check against a database of workspace custom domains
+    // For now, return false to maintain security
+    return false;
   }
 
   /**
@@ -106,11 +196,11 @@ class CORSManager {
     // Check blocked origins first
     if (this.isOriginBlocked(origin)) {
       this.corsMetrics.blockedRequests++;
-      this._logCORSEvent('ORIGIN_BLOCKED', {
+      this._logCORSEvent("ORIGIN_BLOCKED", {
         origin,
         ip: req.ip,
-        userAgent: req.get('User-Agent'),
-        referer: req.get('Referer'),
+        userAgent: req.get("User-Agent"),
+        referer: req.get("Referer"),
       });
       return false;
     }
@@ -129,59 +219,31 @@ class CORSManager {
 
     // Block unknown origins
     this.corsMetrics.blockedRequests++;
-    this._logCORSEvent('ORIGIN_REJECTED', {
+    this._logCORSEvent("ORIGIN_REJECTED", {
       origin,
       ip: req.ip,
-      userAgent: req.get('User-Agent'),
-      referer: req.get('Referer'),
+      userAgent: req.get("User-Agent"),
+      referer: req.get("Referer"),
     });
 
     return false;
   }
 
   /**
-   * Check if origin is explicitly blocked
-   * @param {string} origin - Origin to check
-   * @returns {boolean} Whether origin is blocked
+   * Create CORS configuration with custom overrides
+   * @param {Object} overrides - Configuration overrides
+   * @returns {Object} CORS configuration
    */
-  isOriginBlocked(origin) {
-    return this.blockedOrigins.some((blocked) => {
-      if (blocked.includes('*')) {
-        // Wildcard matching
-        const pattern = blocked.replace(/\*/g, '.*');
-        return new RegExp(`^${pattern}$`).test(origin);
-      }
-      return origin === blocked;
-    });
-  }
+  _createCORSConfig(overrides = {}) {
+    const baseConfig = {
+      ...BASE_CORS_CONFIG,
+      origin: (origin, callback) => {
+        const isAllowed = this.validateOrigin(origin, callback.req);
+        callback(null, isAllowed);
+      },
+    };
 
-  /**
-   * Check if origin is in allowed list
-   * @param {string} origin - Origin to check
-   * @returns {boolean} Whether origin is allowed
-   */
-  isOriginAllowed(origin) {
-    return this.allowedOrigins.some((allowed) => {
-      if (allowed.includes('*')) {
-        // Wildcard matching
-        const pattern = allowed.replace(/\*/g, '.*');
-        return new RegExp(`^${pattern}$`).test(origin);
-      }
-      return origin === allowed;
-    });
-  }
-
-  /**
-   * Check if origin is a custom domain for a workspace
-   * @param {string} origin - Origin to check
-   * @param {Object} req - Express request object
-   * @returns {boolean} Whether custom domain is allowed
-   */
-  isCustomDomainAllowed(origin, req) {
-    // TODO: Implement workspace custom domain validation
-    // This would check against a database of workspace custom domains
-    // For now, return false to maintain security
-    return false;
+    return { ...baseConfig, ...overrides };
   }
 
   /**
@@ -189,53 +251,7 @@ class CORSManager {
    * @returns {Object} CORS configuration
    */
   getCORSConfig() {
-    return {
-      origin: (origin, callback) => {
-        const isAllowed = this.validateOrigin(origin, callback.req);
-        callback(null, isAllowed);
-      },
-
-      credentials: config.security.cors.credentials,
-      optionsSuccessStatus: config.security.cors.optionsSuccessStatus,
-
-      // Allowed methods
-      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
-
-      // Allowed headers
-      allowedHeaders: [
-        'Origin',
-        'X-Requested-With',
-        'Content-Type',
-        'Accept',
-        'Authorization',
-        'X-API-Key',
-        'X-Workspace-ID',
-        'X-Device-ID',
-        'X-Request-ID',
-        'Cache-Control',
-        'Pragma',
-      ],
-
-      // Exposed headers (what client can access)
-      exposedHeaders: [
-        'X-Total-Count',
-        'X-Page-Count',
-        'X-Current-Page',
-        'X-Per-Page',
-        'X-Rate-Limit-Remaining',
-        'X-Rate-Limit-Reset',
-        'X-Request-ID',
-      ],
-
-      // Preflight cache duration (24 hours)
-      maxAge: 86400,
-
-      // Handle preflight requests
-      preflightContinue: false,
-
-      // Custom success status for legacy browsers
-      optionsSuccessStatus: 200,
-    };
+    return this._createCORSConfig();
   }
 
   /**
@@ -243,39 +259,32 @@ class CORSManager {
    * @returns {Object} Strict CORS configuration
    */
   getStrictCORSConfig() {
-    const baseConfig = this.getCORSConfig();
-
-    return {
-      ...baseConfig,
-
+    return this._createCORSConfig({
       // More restrictive in production
-      methods: ['GET', 'POST', 'PUT', 'DELETE'],
-
+      methods: ["GET", "POST", "PUT", "DELETE"],
       // Reduced allowed headers
       allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'X-API-Key',
-        'X-Workspace-ID',
+        "Content-Type",
+        "Authorization",
+        "X-API-Key",
+        "X-Workspace-ID",
       ],
-
       // Shorter preflight cache
       maxAge: 3600, // 1 hour
-
       // Stricter origin validation
       origin: (origin, callback) => {
         if (!origin) {
-          return callback(new Error('Origin header required'));
+          return callback(new Error("Origin header required"));
         }
 
         const isAllowed = this.validateOrigin(origin, callback.req);
         if (!isAllowed) {
-          return callback(new Error('Origin not allowed by CORS policy'));
+          return callback(new Error("Origin not allowed by CORS policy"));
         }
 
         callback(null, true);
       },
-    };
+    });
   }
 
   /**
@@ -283,23 +292,16 @@ class CORSManager {
    * @returns {Object} Permissive CORS configuration
    */
   getPermissiveCORSConfig() {
-    const baseConfig = this.getCORSConfig();
-
-    return {
-      ...baseConfig,
-
+    return this._createCORSConfig({
       // Allow all origins in development
       origin: true,
-
       // Allow all methods
-      methods: '*',
-
+      methods: "*",
       // Allow all headers
-      allowedHeaders: '*',
-
+      allowedHeaders: "*",
       // Longer preflight cache for development
       maxAge: 86400, // 24 hours
-    };
+    });
   }
 
   /**
@@ -309,7 +311,7 @@ class CORSManager {
   addAllowedOrigin(origin) {
     if (!this.allowedOrigins.includes(origin)) {
       this.allowedOrigins.push(origin);
-      this._logCORSEvent('ORIGIN_ADDED', { origin });
+      this._logCORSEvent("ORIGIN_ADDED", { origin });
     }
   }
 
@@ -321,7 +323,7 @@ class CORSManager {
     const index = this.allowedOrigins.indexOf(origin);
     if (index > -1) {
       this.allowedOrigins.splice(index, 1);
-      this._logCORSEvent('ORIGIN_REMOVED', { origin });
+      this._logCORSEvent("ORIGIN_REMOVED", { origin });
     }
   }
 
@@ -332,7 +334,7 @@ class CORSManager {
   addBlockedOrigin(origin) {
     if (!this.blockedOrigins.includes(origin)) {
       this.blockedOrigins.push(origin);
-      this._logCORSEvent('ORIGIN_BLOCKED_ADDED', { origin });
+      this._logCORSEvent("ORIGIN_BLOCKED_ADDED", { origin });
     }
   }
 
@@ -346,7 +348,7 @@ class CORSManager {
       allowedOriginsCount: this.allowedOrigins.length,
       blockedOriginsCount: this.blockedOrigins.length,
       cacheSize: this.corsCache.size,
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
     };
   }
 
@@ -361,8 +363,8 @@ class CORSManager {
       policy: config.isProduction()
         ? CORS_POLICIES.STRICT
         : CORS_POLICIES.PERMISSIVE,
-      environment: config.app.env,
-      credentialsEnabled: config.security.cors.credentials,
+      environment: config.app?.env || process.env.NODE_ENV,
+      credentialsEnabled: config.security?.cors?.credentials ?? true,
     };
   }
 
@@ -374,17 +376,17 @@ class CORSManager {
    */
   _logCORSEvent(event, data) {
     const logEntry = {
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
       event,
-      data,
-      source: 'CORS_MANAGER',
+      data: sanitizeSensitiveData(data),
+      source: "CORS_MANAGER",
     };
 
     // Log security events
-    if (event.includes('BLOCKED') || event.includes('REJECTED')) {
-      console.warn('🚫 CORS Security Event:', logEntry);
-    } else if (config.logging.level === 'debug') {
-      console.log('🌐 CORS Event:', logEntry);
+    if (event.includes("BLOCKED") || event.includes("REJECTED")) {
+      console.warn("🚫 CORS Security Event:", logEntry);
+    } else if (config.logging?.level === "debug") {
+      console.log("🌐 CORS Event:", logEntry);
     }
 
     // In production, send to security monitoring service

@@ -1,0 +1,283 @@
+# ===================================
+# AI-Persona Backend - Docker Compose
+# ===================================
+# Multi-service orchestration for development and production
+# Includes PostgreSQL and the main application
+#
+# @author AI-Persona Backend
+# @version 1.0.
+
+# ===================================
+# NETWORKS
+# ===================================
+networks:
+  ai-persona-network:
+    driver: bridge
+    name: ai-persona-network
+
+# ===================================
+# VOLUMES
+# ===================================
+volumes:
+  postgres_data:
+    driver: local
+    name: ai-persona-postgres-data
+  app_logs:
+    driver: local
+    name: ai-persona-app-logs
+
+# ===================================
+# SERVICES
+# ===================================
+services:
+  # ===================================
+  # POSTGRESQL DATABASE
+  # ===================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: ai-persona-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ai_persona
+      POSTGRES_USER: ai_persona_user
+      POSTGRES_PASSWORD: ai_persona_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ai-persona-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_persona_user -d ai_persona"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+      -c max_connections=200
+      -c shared_buffers=256MB
+      -c effective_cache_size=1GB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=4MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+      -c max_worker_processes=2
+      -c max_parallel_workers_per_gather=1
+      -c max_parallel_workers=2
+      -c max_parallel_maintenance_workers=1
+
+  # ===================================
+  # MAIN APPLICATION (DEVELOPMENT)
+  # ===================================
+  app-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: ai-persona-app-dev
+    restart: unless-stopped
+    environment:
+      # Node.js
+      NODE_ENV: development
+      PORT: 3000
+
+      # Database
+      DATABASE_URL: postgresql://ai_persona_user:${POSTGRES_PASSWORD:-ai_persona_password}@postgres:5432/ai_persona?schema=public
+
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      JWT_ACCESS_TOKEN_EXPIRES_IN: 15m
+      JWT_REFRESH_TOKEN_EXPIRES_IN: 7d
+
+      # Server
+      HOST: 0.0.0.0
+      ENABLE_CLUSTER: false
+      ENABLE_HTTPS: false
+      MAX_MEMORY_USAGE: 512MB
+      HEALTH_CHECK_INTERVAL: 30000
+      SHUTDOWN_TIMEOUT: 30000
+
+      # Security
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000,http://localhost:3001}
+      RATE_LIMIT_WINDOW_MS: 900000
+      RATE_LIMIT_MAX_REQUESTS: 100
+
+      # Email (configure as needed)
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-smtp}
+      SMTP_HOST: ${SMTP_HOST:-localhost}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-noreply@ai-persona.com}
+
+      # OAuth (configure as needed)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+
+      # Logging
+      LOG_LEVEL: debug
+      LOG_FORMAT: combined
+      LOG_DIR: /app/logs
+
+    ports:
+      - "3000:3000"
+    volumes:
+      - app_logs:/app/logs
+      - ./src:/app/src:ro # Read-only for development hot reload
+      - ./prisma:/app/prisma:ro
+    networks:
+      - ai-persona-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ===================================
+  # MAIN APPLICATION (PRODUCTION)
+  # ===================================
+  app-prod:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: ai-persona-app-prod
+    restart: unless-stopped
+    environment:
+      # Node.js
+      NODE_ENV: production
+      PORT: 3000
+
+      # Database
+      DATABASE_URL: postgresql://ai_persona_user:${POSTGRES_PASSWORD:-ai_persona_password}@postgres:5432/ai_persona?schema=public
+
+      # JWT
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ACCESS_TOKEN_EXPIRES_IN: 15m
+      JWT_REFRESH_TOKEN_EXPIRES_IN: 7d
+
+      # Server
+      HOST: 0.0.0.0
+      ENABLE_CLUSTER: true
+      ENABLE_HTTPS: ${ENABLE_HTTPS:-false}
+      MAX_MEMORY_USAGE: 1GB
+      HEALTH_CHECK_INTERVAL: 30000
+      SHUTDOWN_TIMEOUT: 30000
+
+      # Security
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      RATE_LIMIT_WINDOW_MS: 900000
+      RATE_LIMIT_MAX_REQUESTS: 100
+
+      # Email
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM}
+
+      # OAuth
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET}
+
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      LOG_DIR: /app/logs
+
+    ports:
+      - "3000:3000"
+    volumes:
+      - app_logs:/app/logs
+      - ./ssl:/app/ssl:ro # SSL certificates for HTTPS
+    networks:
+      - ai-persona-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    profiles:
+      - production
+
+  # ===================================
+  # PRISMA STUDIO (DEVELOPMENT ONLY)
+  # ===================================
+  prisma-studio:
+    image: node:18-alpine
+    container_name: ai-persona-prisma-studio
+    restart: "no"
+    working_dir: /app
+    environment:
+      DATABASE_URL: postgresql://ai_persona_user:${POSTGRES_PASSWORD:-ai_persona_password}@postgres:5432/ai_persona?schema=public
+    volumes:
+      - ./prisma:/app/prisma:ro
+    ports:
+      - "5555:5555"
+    networks:
+      - ai-persona-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "
+        npm install -g prisma &&
+        npx prisma studio --hostname 0.0.0.0 --port 5555
+      "
+    profiles:
+      - development
+# ===================================
+# USAGE INSTRUCTIONS
+# ===================================
+#
+# Development:
+#   docker-compose up app-dev postgres
+#   docker-compose --profile development up
+#
+# Production:
+#   docker-compose --profile production up -d
+#
+# Database Management:
+#   docker-compose exec postgres psql -U ai_persona_user -d ai_persona
+#   docker-compose run --rm app-dev npx prisma migrate dev
+#   docker-compose run --rm app-dev npx prisma db seed
+#
+# Logs:
+#   docker-compose logs -f app-dev
+#   docker-compose logs -f postgres
+#

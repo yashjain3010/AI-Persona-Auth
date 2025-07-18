@@ -1,0 +1,669 @@
+openapi: 3.0.3
+info:
+  title: AI-Persona SaaS API
+  version: 1.0.0
+  description: |
+    Multi-tenant SaaS backend API with secure authentication (local, OAuth2), user, and workspace management.
+    All endpoints are prefixed with `/api/v1`.
+
+servers:
+  - url: http://localhost:3001/api/v1
+    description: Local development
+
+tags:
+  - name: Auth
+    description: Authentication and authorization
+  - name: Users
+    description: User profile and management
+  - name: Workspaces
+    description: Workspace and membership management
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    WorkspaceId:
+      name: workspaceId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Workspace ID
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        name: { type: string }
+        emailVerified: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        memberships:
+          type: array
+          items:
+            $ref: '#/components/schemas/Membership'
+    Membership:
+      type: object
+      properties:
+        id: { type: string }
+        workspace:
+          $ref: '#/components/schemas/Workspace'
+        role: { type: string }
+        isActive: { type: boolean }
+    Workspace:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        domain: { type: string }
+    AuthTokens:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+    ErrorResponse:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            statusCode: { type: integer }
+            timestamp: { type: string }
+            requestId: { type: string }
+
+paths:
+
+  # --- AUTH ROUTES ---
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                name: { type: string }
+      responses:
+        200:
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  workspace: { $ref: '#/components/schemas/Workspace' }
+                  tokens: { $ref: '#/components/schemas/AuthTokens' }
+        400:
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        200:
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  workspace: { $ref: '#/components/schemas/Workspace' }
+                  tokens: { $ref: '#/components/schemas/AuthTokens' }
+        400:
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/google:
+    get:
+      tags: [Auth]
+      summary: Initiate Google OAuth2 login
+      responses:
+        302:
+          description: Redirect to Google OAuth2
+
+  /auth/google/callback:
+    get:
+      tags: [Auth]
+      summary: Google OAuth2 callback
+      responses:
+        302:
+          description: Redirect to frontend with tokens
+
+  /auth/microsoft:
+    get:
+      tags: [Auth]
+      summary: Initiate Microsoft OAuth2 login
+      responses:
+        302:
+          description: Redirect to Microsoft OAuth2
+
+  /auth/microsoft/callback:
+    get:
+      tags: [Auth]
+      summary: Microsoft OAuth2 callback
+      responses:
+        302:
+          description: Redirect to frontend with tokens
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh JWT access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        200:
+          description: Token refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokens'
+        400:
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout and invalidate tokens
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        200:
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Verify email address
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        200:
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  message: { type: string }
+        400:
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request password reset email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        200:
+          description: Password reset email sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        400:
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Reset password with token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token: { type: string }
+                newPassword: { type: string, format: password }
+      responses:
+        200:
+          description: Password reset successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  user: { $ref: '#/components/schemas/User' }
+        400:
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      security: [{ BearerAuth: [] }]
+      responses:
+        200:
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/health:
+    get:
+      tags: [Auth]
+      summary: Auth service health check
+      responses:
+        200:
+          description: Health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  metrics: { type: object }
+
+# --- USERS ROUTES ---
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get current user profile
+      security: [{ BearerAuth: [] }]
+      responses:
+        200:
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [Users]
+      summary: Update current user profile
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                # Add other updatable fields as needed
+      responses:
+        200:
+          description: User profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/preferences:
+    get:
+      tags: [Users]
+      summary: Get user preferences
+      security: [{ BearerAuth: [] }]
+      responses:
+        200:
+          description: User preferences
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preferences: { type: object }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [Users]
+      summary: Update user preferences
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                preferences: { type: object }
+      responses:
+        200:
+          description: Preferences updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preferences: { type: object }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/change-password:
+    post:
+      tags: [Users]
+      summary: Change user password
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [oldPassword, newPassword]
+              properties:
+                oldPassword: { type: string, format: password }
+                newPassword: { type: string, format: password }
+      responses:
+        200:
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/search:
+    get:
+      tags: [Users]
+      summary: Search users in workspace
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Search query
+      responses:
+        200:
+          description: Users found
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/User' }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/deactivate:
+    post:
+      tags: [Users]
+      summary: Deactivate user (self)
+      security: [{ BearerAuth: [] }]
+      responses:
+        200:
+          description: User deactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/reactivate:
+    post:
+      tags: [Users]
+      summary: Reactivate user (self)
+      security: [{ BearerAuth: [] }]
+      responses:
+        200:
+          description: User reactivated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+# --- WORKSPACES ROUTES ---
+
+  /workspaces/details:
+    get:
+      tags: [Workspaces]
+      summary: Get workspace details
+      security: [{ BearerAuth: [] }]
+      responses:
+        200:
+          description: Workspace details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags: [Workspaces]
+      summary: Update workspace details
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                # Add other updatable fields as needed
+      responses:
+        200:
+          description: Workspace updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /workspaces/invite:
+    post:
+      tags: [Workspaces]
+      summary: Invite a user to workspace
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                # Add other invite fields as needed
+      responses:
+        200:
+          description: User invited
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /workspaces/accept-invite:
+    post:
+      tags: [Workspaces]
+      summary: Accept workspace invitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [inviteToken]
+              properties:
+                inviteToken: { type: string }
+      responses:
+        200:
+          description: Invitation accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+
+  /workspaces/remove-member:
+    post:
+      tags: [Workspaces]
+      summary: Remove a member from workspace
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memberId]
+              properties:
+                memberId: { type: string }
+      responses:
+        200:
+          description: Member removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /workspaces/change-role:
+    post:
+      tags: [Workspaces]
+      summary: Change a member's role in workspace
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memberId, newRole]
+              properties:
+                memberId: { type: string }
+                newRole: { type: string }
+      responses:
+        200:
+          description: Member role updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+  /workspaces/stats:
+    get:
+      tags: [Workspaces]
+      summary: Get workspace statistics
+      security: [{ BearerAuth: [] }]
+      responses:
+        200:
+          description: Workspace stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats: { type: object }
+        401:
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

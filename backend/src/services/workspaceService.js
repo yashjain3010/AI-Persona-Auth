@@ -17,68 +17,18 @@
  * @version 1.0.0
  */
 
-const crypto = require('crypto');
 const { client: prisma } = require('../config/database');
 const {
-  extractDomain,
-  isPersonalEmail,
-  normalizeEmail,
+  normalizeEmail
 } = require('../utils/domain');
 const { generateSecureToken } = require('../utils/encryption');
-const { sendInvitationEmail } = require('../config/email');
-const { generateSpecialToken, TOKEN_TYPES } = require('../config/jwt');
+const { sendUserEmail } = require('../utils/email');
+const logger = require('../utils/logger');
+const { ApiError, ERROR_CODES, HTTP_STATUS } = require('../utils/apiError');
+const { ApiResponse } = require('../utils/apiResponse');
+const { asyncHandler } = require('../utils/asyncHandler');
 const config = require('../config');
 
-/**
- * Workspace Service Result Types
- */
-const WORKSPACE_RESULTS = {
-  SUCCESS: 'success',
-  WORKSPACE_NOT_FOUND: 'workspace_not_found',
-  INVALID_PERMISSIONS: 'invalid_permissions',
-  DOMAIN_ALREADY_EXISTS: 'domain_already_exists',
-  MEMBER_ALREADY_EXISTS: 'member_already_exists',
-  MEMBER_NOT_FOUND: 'member_not_found',
-  INVITE_NOT_FOUND: 'invite_not_found',
-  INVITE_EXPIRED: 'invite_expired',
-  INVITE_ALREADY_USED: 'invite_already_used',
-  WORKSPACE_INACTIVE: 'workspace_inactive',
-  VALIDATION_ERROR: 'validation_error',
-  OPERATION_FAILED: 'operation_failed',
-  LIMIT_EXCEEDED: 'limit_exceeded',
-};
-
-/**
- * Workspace Events for audit logging
- */
-const WORKSPACE_EVENTS = {
-  WORKSPACE_CREATED: 'workspace_created',
-  WORKSPACE_UPDATED: 'workspace_updated',
-  WORKSPACE_DEACTIVATED: 'workspace_deactivated',
-  WORKSPACE_REACTIVATED: 'workspace_reactivated',
-  MEMBER_INVITED: 'member_invited',
-  MEMBER_JOINED: 'member_joined',
-  MEMBER_REMOVED: 'member_removed',
-  MEMBER_ROLE_CHANGED: 'member_role_changed',
-  INVITE_CREATED: 'invite_created',
-  INVITE_ACCEPTED: 'invite_accepted',
-  INVITE_REVOKED: 'invite_revoked',
-  SETTINGS_UPDATED: 'settings_updated',
-  SECURITY_EVENT: 'security_event',
-};
-
-/**
- * Workspace Member Roles
- */
-const WORKSPACE_ROLES = {
-  ADMIN: 'ADMIN',
-  MEMBER: 'MEMBER',
-};
-
-/**
- * Workspace Service Class
- * Handles all workspace management business logic
- */
 class WorkspaceService {
   constructor() {
     this.workspaceMetrics = {
@@ -97,179 +47,123 @@ class WorkspaceService {
 
   /**
    * Get workspace details with members
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} options - Query options
-   * @returns {Promise<Object>} Workspace details result
    */
   async getWorkspaceDetails(workspaceId, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const {
         includeMembers = true,
         includeInvites = false,
         includeStats = false,
         requestingUserId = null,
       } = options;
-
-      // Validate requesting user has access to workspace
+      // Validate workspaceId
+      if (!workspaceId)
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Workspace ID is required',
+          HTTP_STATUS.BAD_REQUEST,
+        );
+      // Optionally validate access
       if (requestingUserId) {
-        const accessCheck = await this.validateWorkspaceAccess(
+        const access = await this.validateWorkspaceAccess(
           requestingUserId,
           workspaceId,
         );
-        if (!accessCheck.success) {
-          return accessCheck;
-        }
+        if (!access)
+          throw new ApiError(
+            ERROR_CODES.ACCESS_DENIED,
+            'No access to workspace',
+            HTTP_STATUS.FORBIDDEN,
+          );
       }
-
-      // Get workspace details
       const workspace = await prisma.workspace.findUnique({
         where: { id: workspaceId },
         include: {
           ...(includeMembers && {
             memberships: {
               where: { isActive: true },
-              include: {
-                user: {
-                  select: {
-                    id: true,
-                    email: true,
-                    name: true,
-                    emailVerified: true,
-                    isActive: true,
-                    createdAt: true,
-                  },
-                },
-              },
+              include: { user: true },
               orderBy: { createdAt: 'asc' },
             },
           }),
           ...(includeInvites && {
             invites: {
-              where: {
-                used: false,
-                expiresAt: { gt: new Date() },
-              },
-              include: {
-                createdBy: {
-                  select: {
-                    id: true,
-                    name: true,
-                    email: true,
-                  },
-                },
-              },
+              where: { used: false, expiresAt: { gt: new Date() } },
               orderBy: { createdAt: 'desc' },
             },
           }),
         },
       });
-
-      if (!workspace) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.WORKSPACE_NOT_FOUND,
-          message: 'Workspace not found',
-        };
-      }
-
-      // Get workspace statistics if requested
+      if (!workspace)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_NOT_FOUND,
+          'Workspace not found',
+          HTTP_STATUS.NOT_FOUND,
+        );
       let stats = null;
-      if (includeStats) {
-        stats = await this.getWorkspaceStats(workspaceId);
-      }
-
-      // Format members
-      const members =
-        workspace.memberships?.map((membership) => ({
-          id: membership.id,
-          role: membership.role,
-          joinedAt: membership.createdAt,
-          user: membership.user,
-        })) || [];
-
-      // Format invites
-      const invites =
-        workspace.invites?.map((invite) => ({
-          id: invite.id,
-          email: invite.email,
-          token: invite.token,
-          expiresAt: invite.expiresAt,
-          createdAt: invite.createdAt,
-          createdBy: invite.createdBy,
-        })) || [];
-
-      return {
-        success: true,
-        result: WORKSPACE_RESULTS.SUCCESS,
-        data: {
-          workspace: {
-            id: workspace.id,
-            name: workspace.name,
-            domain: workspace.domain,
-            isActive: workspace.isActive,
-            createdAt: workspace.createdAt,
-            updatedAt: workspace.updatedAt,
-          },
-          members: includeMembers ? members : undefined,
-          invites: includeInvites ? invites : undefined,
-          stats: includeStats ? stats : undefined,
+      if (includeStats) stats = await this.getWorkspaceStats(workspaceId);
+      return ApiResponse.success('Workspace details retrieved', {
+        workspace: {
+          id: workspace.id,
+          name: workspace.name,
+          domain: workspace.domain,
+          isActive: workspace.isActive,
+          createdAt: workspace.createdAt,
+          updatedAt: workspace.updatedAt,
         },
-      };
-    } catch (error) {
-      console.error('Get workspace details error:', error);
-
-      return {
-        success: false,
-        result: WORKSPACE_RESULTS.OPERATION_FAILED,
-        message: 'Failed to retrieve workspace details',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+        members: includeMembers
+          ? (workspace.memberships || []).map((m) => ({
+              id: m.id,
+              role: m.role,
+              joinedAt: m.createdAt,
+              user: m.user,
+            }))
+          : undefined,
+        invites: includeInvites ? workspace.invites : undefined,
+        stats: includeStats ? stats : undefined,
+      });
+    })();
   }
 
   /**
    * Update workspace settings
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} updateData - Update data
-   * @param {Object} options - Update options
-   * @returns {Promise<Object>} Update result
    */
   async updateWorkspace(workspaceId, updateData, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { requestingUserId, ipAddress = null } = options;
       const { name, domain } = updateData;
-
-      // Validate requesting user has admin permissions
+      // Validate workspaceId
+      if (!workspaceId)
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Workspace ID is required',
+          HTTP_STATUS.BAD_REQUEST,
+        );
+      // Validate permissions
       const hasPermission = await this.hasWorkspacePermission(
         requestingUserId,
         workspaceId,
         'ADMIN',
       );
-      if (!hasPermission) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVALID_PERMISSIONS,
-          message: 'Admin permissions required to update workspace',
-        };
-      }
-
+      if (!hasPermission)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Admin permissions required',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Get current workspace
       const currentWorkspace = await prisma.workspace.findUnique({
         where: { id: workspaceId },
       });
-
-      if (!currentWorkspace) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.WORKSPACE_NOT_FOUND,
-          message: 'Workspace not found',
-        };
-      }
-
+      if (!currentWorkspace)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_NOT_FOUND,
+          'Workspace not found',
+          HTTP_STATUS.NOT_FOUND,
+        );
       // Prepare update data
       const updateFields = {};
       const changes = [];
-
       if (name !== undefined && name !== currentWorkspace.name) {
         updateFields.name = name;
         changes.push({
@@ -278,21 +172,17 @@ class WorkspaceService {
           newValue: name,
         });
       }
-
       if (domain !== undefined && domain !== currentWorkspace.domain) {
         // Check if domain already exists
         const existingWorkspace = await prisma.workspace.findUnique({
           where: { domain },
         });
-
-        if (existingWorkspace && existingWorkspace.id !== workspaceId) {
-          return {
-            success: false,
-            result: WORKSPACE_RESULTS.DOMAIN_ALREADY_EXISTS,
-            message: 'Domain is already in use by another workspace',
-          };
-        }
-
+        if (existingWorkspace && existingWorkspace.id !== workspaceId)
+          throw new ApiError(
+            ERROR_CODES.RESOURCE_ALREADY_EXISTS,
+            'Domain is already in use',
+            HTTP_STATUS.CONFLICT,
+          );
         updateFields.domain = domain;
         changes.push({
           field: 'domain',
@@ -300,7 +190,6 @@ class WorkspaceService {
           newValue: domain,
         });
       }
-
       // Update workspace if there are changes
       let updatedWorkspace = currentWorkspace;
       if (Object.keys(updateFields).length > 0) {
@@ -309,88 +198,40 @@ class WorkspaceService {
           data: updateFields,
         });
       }
-
-      // Update metrics
       this.workspaceMetrics.workspacesUpdated++;
-
-      // Log workspace update
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.WORKSPACE_UPDATED, {
+      logger.info('Workspace updated', {
         workspaceId,
         requestingUserId,
         changes,
         ipAddress,
       });
-
-      return {
-        success: true,
-        result: WORKSPACE_RESULTS.SUCCESS,
-        message: 'Workspace updated successfully',
-        data: {
-          workspace: updatedWorkspace,
-          changes,
-        },
-      };
-    } catch (error) {
-      console.error('Update workspace error:', error);
-
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.SECURITY_EVENT, {
-        event: 'workspace_update_failed',
-        workspaceId,
-        requestingUserId: options.requestingUserId,
-        error: error.message,
-        ipAddress: options.ipAddress,
+      return ApiResponse.success('Workspace updated successfully', {
+        workspace: updatedWorkspace,
+        changes,
       });
-
-      return {
-        success: false,
-        result: WORKSPACE_RESULTS.OPERATION_FAILED,
-        message: 'Failed to update workspace',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+    })();
   }
 
   /**
    * Invite user to workspace
-   * @param {string} workspaceId - Workspace ID
-   * @param {Object} inviteData - Invite data
-   * @param {Object} options - Invite options
-   * @returns {Promise<Object>} Invite result
    */
   async inviteUser(workspaceId, inviteData, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { email } = inviteData;
       const { requestingUserId, ipAddress = null } = options;
-
-      // Validate requesting user has admin permissions
+      // Validate permissions
       const hasPermission = await this.hasWorkspacePermission(
         requestingUserId,
         workspaceId,
         'ADMIN',
       );
-      if (!hasPermission) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVALID_PERMISSIONS,
-          message: 'Admin permissions required to invite users',
-        };
-      }
-
+      if (!hasPermission)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Admin permissions required',
+          HTTP_STATUS.FORBIDDEN,
+        );
       const normalizedEmail = normalizeEmail(email);
-
-      // Get workspace details
-      const workspace = await prisma.workspace.findUnique({
-        where: { id: workspaceId },
-      });
-
-      if (!workspace || !workspace.isActive) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.WORKSPACE_NOT_FOUND,
-          message: 'Workspace not found or inactive',
-        };
-      }
-
       // Check if user already exists in workspace
       const existingMember = await prisma.membership.findFirst({
         where: {
@@ -399,15 +240,12 @@ class WorkspaceService {
           isActive: true,
         },
       });
-
-      if (existingMember) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.MEMBER_ALREADY_EXISTS,
-          message: 'User is already a member of this workspace',
-        };
-      }
-
+      if (existingMember)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_ALREADY_EXISTS,
+          'User is already a member',
+          HTTP_STATUS.CONFLICT,
+        );
       // Check for existing pending invite
       const existingInvite = await prisma.invite.findFirst({
         where: {
@@ -417,34 +255,27 @@ class WorkspaceService {
           expiresAt: { gt: new Date() },
         },
       });
-
-      if (existingInvite) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.MEMBER_ALREADY_EXISTS,
-          message: 'User already has a pending invitation',
-        };
-      }
-
+      if (existingInvite)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_ALREADY_EXISTS,
+          'User already has a pending invitation',
+          HTTP_STATUS.CONFLICT,
+        );
       // Check workspace member limit
       const memberCount = await prisma.membership.count({
         where: { workspaceId, isActive: true },
       });
-
-      if (memberCount >= config.workspace.maxMembersPerWorkspace) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.LIMIT_EXCEEDED,
-          message: 'Workspace member limit reached',
-        };
-      }
-
+      if (memberCount >= config.workspace.maxMembersPerWorkspace)
+        throw new ApiError(
+          ERROR_CODES.LIMIT_EXCEEDED,
+          'Workspace member limit reached',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Generate invite token
       const inviteToken = generateSecureToken();
       const expiresAt = new Date(
         Date.now() + config.workspace.inviteExpiry * 60 * 60 * 1000,
       );
-
       // Create invite
       const invite = await prisma.invite.create({
         data: {
@@ -454,33 +285,16 @@ class WorkspaceService {
           expiresAt,
           createdById: requestingUserId,
         },
-        include: {
-          createdBy: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-        },
       });
-
       // Send invitation email
-      await sendInvitationEmail({
-        email: normalizedEmail,
-        inviterName: invite.createdBy.name,
-        workspaceName: workspace.name,
-        inviteToken,
-        workspaceId,
-        invitedBy: requestingUserId,
+      await sendUserEmail('invitation', {
+        invite: { email: normalizedEmail, token: inviteToken, expiresAt },
+        inviter: { id: requestingUserId },
+        workspace: { id: workspaceId },
       });
-
-      // Update metrics
       this.workspaceMetrics.membersInvited++;
       this.workspaceMetrics.invitesCreated++;
-
-      // Log invite creation
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.MEMBER_INVITED, {
+      logger.info('Workspace member invited', {
         workspaceId,
         inviteId: invite.id,
         email: normalizedEmail,
@@ -488,293 +302,153 @@ class WorkspaceService {
         expiresAt,
         ipAddress,
       });
-
-      return {
-        success: true,
-        result: WORKSPACE_RESULTS.SUCCESS,
-        message: 'User invited successfully',
-        data: {
-          invite: {
-            id: invite.id,
-            email: invite.email,
-            token: invite.token,
-            expiresAt: invite.expiresAt,
-            createdAt: invite.createdAt,
-            createdBy: invite.createdBy,
-          },
-        },
-      };
-    } catch (error) {
-      console.error('Invite user error:', error);
-
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.SECURITY_EVENT, {
-        event: 'invite_failed',
-        workspaceId,
-        email: inviteData.email,
-        requestingUserId: options.requestingUserId,
-        error: error.message,
-        ipAddress: options.ipAddress,
-      });
-
-      return {
-        success: false,
-        result: WORKSPACE_RESULTS.OPERATION_FAILED,
-        message: 'Failed to invite user',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+      return ApiResponse.success('User invited successfully', { invite });
+    })();
   }
 
   /**
    * Accept workspace invitation
-   * @param {string} inviteToken - Invite token
-   * @param {Object} options - Accept options
-   * @returns {Promise<Object>} Accept result
    */
   async acceptInvitation(inviteToken, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { userId, ipAddress = null } = options;
-
       // Find invite
       const invite = await prisma.invite.findUnique({
         where: { token: inviteToken },
-        include: {
-          workspace: true,
-          createdBy: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-            },
-          },
-        },
+        include: { workspace: true },
       });
-
-      if (!invite) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVITE_NOT_FOUND,
-          message: 'Invitation not found',
-        };
-      }
-
-      if (invite.used) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVITE_ALREADY_USED,
-          message: 'Invitation has already been used',
-        };
-      }
-
-      if (invite.expiresAt < new Date()) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVITE_EXPIRED,
-          message: 'Invitation has expired',
-        };
-      }
-
-      if (!invite.workspace.isActive) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.WORKSPACE_INACTIVE,
-          message: 'Workspace is inactive',
-        };
-      }
-
+      if (!invite)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_NOT_FOUND,
+          'Invitation not found',
+          HTTP_STATUS.NOT_FOUND,
+        );
+      if (invite.used)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_ALREADY_EXISTS,
+          'Invitation already used',
+          HTTP_STATUS.CONFLICT,
+        );
+      if (invite.expiresAt < new Date())
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Invitation expired',
+          HTTP_STATUS.BAD_REQUEST,
+        );
+      if (!invite.workspace.isActive)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Workspace is inactive',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Get user details
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-      });
-
-      if (!user || user.email !== invite.email) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.VALIDATION_ERROR,
-          message: 'User email does not match invitation',
-        };
-      }
-
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user || user.email !== invite.email)
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'User email does not match invitation',
+          HTTP_STATUS.BAD_REQUEST,
+        );
       // Check if user is already a member
       const existingMembership = await prisma.membership.findFirst({
-        where: {
-          userId,
-          workspaceId: invite.workspaceId,
-          isActive: true,
-        },
+        where: { userId, workspaceId: invite.workspaceId, isActive: true },
       });
-
-      if (existingMembership) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.MEMBER_ALREADY_EXISTS,
-          message: 'User is already a member of this workspace',
-        };
-      }
-
+      if (existingMembership)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_ALREADY_EXISTS,
+          'User is already a member',
+          HTTP_STATUS.CONFLICT,
+        );
       // Accept invitation in transaction
       const result = await prisma.$transaction(async (tx) => {
-        // Mark invite as used
         await tx.invite.update({
           where: { id: invite.id },
           data: { used: true },
         });
-
-        // Create membership
         const membership = await tx.membership.create({
-          data: {
-            userId,
-            workspaceId: invite.workspaceId,
-            role: 'MEMBER',
-          },
+          data: { userId, workspaceId: invite.workspaceId, role: 'MEMBER' },
         });
-
         return { membership };
       });
-
-      // Update metrics
       this.workspaceMetrics.membersJoined++;
       this.workspaceMetrics.invitesAccepted++;
-
-      // Log invite acceptance
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.INVITE_ACCEPTED, {
+      logger.info('Workspace invitation accepted', {
         inviteId: invite.id,
         workspaceId: invite.workspaceId,
         userId,
         email: invite.email,
-        invitedBy: invite.createdById,
         ipAddress,
       });
-
-      return {
-        success: true,
-        result: WORKSPACE_RESULTS.SUCCESS,
-        message: 'Invitation accepted successfully',
-        data: {
-          workspace: invite.workspace,
-          membership: result.membership,
-        },
-      };
-    } catch (error) {
-      console.error('Accept invitation error:', error);
-
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.SECURITY_EVENT, {
-        event: 'invite_accept_failed',
-        inviteToken,
-        userId: options.userId,
-        error: error.message,
-        ipAddress: options.ipAddress,
+      return ApiResponse.success('Invitation accepted successfully', {
+        workspace: invite.workspace,
+        membership: result.membership,
       });
-
-      return {
-        success: false,
-        result: WORKSPACE_RESULTS.OPERATION_FAILED,
-        message: 'Failed to accept invitation',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+    })();
   }
 
   /**
    * Remove member from workspace
-   * @param {string} workspaceId - Workspace ID
-   * @param {string} memberId - Member ID to remove
-   * @param {Object} options - Remove options
-   * @returns {Promise<Object>} Remove result
    */
   async removeMember(workspaceId, memberId, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const {
         requestingUserId,
         reason = 'No reason provided',
         ipAddress = null,
       } = options;
-
-      // Validate requesting user has admin permissions
+      // Validate permissions
       const hasPermission = await this.hasWorkspacePermission(
         requestingUserId,
         workspaceId,
         'ADMIN',
       );
-      if (!hasPermission) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVALID_PERMISSIONS,
-          message: 'Admin permissions required to remove members',
-        };
-      }
-
+      if (!hasPermission)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Admin permissions required',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Find membership
       const membership = await prisma.membership.findFirst({
-        where: {
-          id: memberId,
-          workspaceId,
-          isActive: true,
-        },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              name: true,
-            },
-          },
-        },
+        where: { id: memberId, workspaceId, isActive: true },
+        include: { user: true },
       });
-
-      if (!membership) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.MEMBER_NOT_FOUND,
-          message: 'Member not found in workspace',
-        };
-      }
-
-      // Prevent removing yourself
-      if (membership.userId === requestingUserId) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVALID_PERMISSIONS,
-          message: 'Cannot remove yourself from workspace',
-        };
-      }
-
+      if (!membership)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_NOT_FOUND,
+          'Member not found',
+          HTTP_STATUS.NOT_FOUND,
+        );
+      if (membership.userId === requestingUserId)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Cannot remove yourself',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Check if this is the last admin
       if (membership.role === 'ADMIN') {
         const adminCount = await prisma.membership.count({
-          where: {
-            workspaceId,
-            role: 'ADMIN',
-            isActive: true,
-          },
+          where: { workspaceId, role: 'ADMIN', isActive: true },
         });
-
-        if (adminCount <= 1) {
-          return {
-            success: false,
-            result: WORKSPACE_RESULTS.INVALID_PERMISSIONS,
-            message: 'Cannot remove the last admin from workspace',
-          };
-        }
+        if (adminCount <= 1)
+          throw new ApiError(
+            ERROR_CODES.FORBIDDEN,
+            'Cannot remove the last admin',
+            HTTP_STATUS.FORBIDDEN,
+          );
       }
-
       // Remove membership
       await prisma.membership.update({
         where: { id: memberId },
         data: { isActive: false },
       });
-
       // Revoke user sessions for this workspace
       await prisma.session.updateMany({
         where: { userId: membership.userId },
         data: { isActive: false },
       });
-
-      // Update metrics
       this.workspaceMetrics.membersRemoved++;
-
-      // Log member removal
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.MEMBER_REMOVED, {
+      logger.info('Workspace member removed', {
         workspaceId,
         memberId,
         userId: membership.userId,
@@ -782,140 +456,73 @@ class WorkspaceService {
         reason,
         ipAddress,
       });
-
-      return {
-        success: true,
-        result: WORKSPACE_RESULTS.SUCCESS,
-        message: 'Member removed successfully',
-        data: {
-          removedMember: {
-            id: membership.id,
-            user: membership.user,
-            role: membership.role,
-          },
+      return ApiResponse.success('Member removed successfully', {
+        removedMember: {
+          id: membership.id,
+          user: membership.user,
+          role: membership.role,
         },
-      };
-    } catch (error) {
-      console.error('Remove member error:', error);
-
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.SECURITY_EVENT, {
-        event: 'member_remove_failed',
-        workspaceId,
-        memberId,
-        requestingUserId: options.requestingUserId,
-        error: error.message,
-        ipAddress: options.ipAddress,
       });
-
-      return {
-        success: false,
-        result: WORKSPACE_RESULTS.OPERATION_FAILED,
-        message: 'Failed to remove member',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+    })();
   }
 
   /**
    * Change member role
-   * @param {string} workspaceId - Workspace ID
-   * @param {string} memberId - Member ID
-   * @param {string} newRole - New role
-   * @param {Object} options - Change options
-   * @returns {Promise<Object>} Change result
    */
   async changeMemberRole(workspaceId, memberId, newRole, options = {}) {
-    try {
+    return asyncHandler(async () => {
       const { requestingUserId, ipAddress = null } = options;
-
-      // Validate requesting user has admin permissions
+      // Validate permissions
       const hasPermission = await this.hasWorkspacePermission(
         requestingUserId,
         workspaceId,
         'ADMIN',
       );
-      if (!hasPermission) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVALID_PERMISSIONS,
-          message: 'Admin permissions required to change member roles',
-        };
-      }
-
+      if (!hasPermission)
+        throw new ApiError(
+          ERROR_CODES.FORBIDDEN,
+          'Admin permissions required',
+          HTTP_STATUS.FORBIDDEN,
+        );
       // Validate new role
-      if (!Object.values(WORKSPACE_ROLES).includes(newRole)) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.VALIDATION_ERROR,
-          message: 'Invalid role specified',
-        };
-      }
-
+      if (!['ADMIN', 'MEMBER'].includes(newRole))
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Invalid role specified',
+          HTTP_STATUS.BAD_REQUEST,
+        );
       // Find membership
       const membership = await prisma.membership.findFirst({
-        where: {
-          id: memberId,
-          workspaceId,
-          isActive: true,
-        },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              name: true,
-            },
-          },
-        },
+        where: { id: memberId, workspaceId, isActive: true },
+        include: { user: true },
       });
-
-      if (!membership) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.MEMBER_NOT_FOUND,
-          message: 'Member not found in workspace',
-        };
-      }
-
+      if (!membership)
+        throw new ApiError(
+          ERROR_CODES.RESOURCE_NOT_FOUND,
+          'Member not found',
+          HTTP_STATUS.NOT_FOUND,
+        );
       // Check if demoting the last admin
       if (membership.role === 'ADMIN' && newRole !== 'ADMIN') {
         const adminCount = await prisma.membership.count({
-          where: {
-            workspaceId,
-            role: 'ADMIN',
-            isActive: true,
-          },
+          where: { workspaceId, role: 'ADMIN', isActive: true },
         });
-
-        if (adminCount <= 1) {
-          return {
-            success: false,
-            result: WORKSPACE_RESULTS.INVALID_PERMISSIONS,
-            message: 'Cannot demote the last admin in workspace',
-          };
-        }
+        if (adminCount <= 1)
+          throw new ApiError(
+            ERROR_CODES.FORBIDDEN,
+            'Cannot demote the last admin',
+            HTTP_STATUS.FORBIDDEN,
+          );
       }
-
       // Update role
       const updatedMembership = await prisma.membership.update({
         where: { id: memberId },
         data: { role: newRole },
-        include: {
-          user: {
-            select: {
-              id: true,
-              email: true,
-              name: true,
-            },
-          },
-        },
+        include: { user: true },
       });
-
-      // Update metrics
-      this.workspaceMetrics.membersRemoved++; // This should be a role change metric
-
-      // Log role change
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.MEMBER_ROLE_CHANGED, {
+      this.workspaceMetrics.roleChanges =
+        (this.workspaceMetrics.roleChanges || 0) + 1;
+      logger.info('Workspace member role changed', {
         workspaceId,
         memberId,
         userId: membership.userId,
@@ -924,233 +531,103 @@ class WorkspaceService {
         changedBy: requestingUserId,
         ipAddress,
       });
-
-      return {
-        success: true,
-        result: WORKSPACE_RESULTS.SUCCESS,
-        message: 'Member role changed successfully',
-        data: {
-          membership: {
-            id: updatedMembership.id,
-            user: updatedMembership.user,
-            role: updatedMembership.role,
-            oldRole: membership.role,
-          },
+      return ApiResponse.success('Member role changed successfully', {
+        membership: {
+          id: updatedMembership.id,
+          user: updatedMembership.user,
+          role: updatedMembership.role,
+          oldRole: membership.role,
         },
-      };
-    } catch (error) {
-      console.error('Change member role error:', error);
-
-      this._logWorkspaceEvent(WORKSPACE_EVENTS.SECURITY_EVENT, {
-        event: 'role_change_failed',
-        workspaceId,
-        memberId,
-        newRole,
-        requestingUserId: options.requestingUserId,
-        error: error.message,
-        ipAddress: options.ipAddress,
       });
-
-      return {
-        success: false,
-        result: WORKSPACE_RESULTS.OPERATION_FAILED,
-        message: 'Failed to change member role',
-        error: config.isDevelopment() ? error.message : undefined,
-      };
-    }
+    })();
   }
 
   /**
    * Get workspace statistics
-   * @param {string} workspaceId - Workspace ID
-   * @returns {Promise<Object>} Workspace statistics
    */
   async getWorkspaceStats(workspaceId) {
-    try {
-      const [
-        totalMembers,
-        activeMembers,
-        adminCount,
-        pendingInvites,
-        totalInvites,
-      ] = await Promise.all([
-        prisma.membership.count({
-          where: { workspaceId },
-        }),
-        prisma.membership.count({
-          where: {
-            workspaceId,
-            isActive: true,
-            user: { isActive: true },
-          },
-        }),
-        prisma.membership.count({
-          where: {
-            workspaceId,
-            role: 'ADMIN',
-            isActive: true,
-          },
-        }),
-        prisma.invite.count({
-          where: {
-            workspaceId,
-            used: false,
-            expiresAt: { gt: new Date() },
-          },
-        }),
-        prisma.invite.count({
-          where: { workspaceId },
-        }),
-      ]);
-
-      return {
-        members: {
-          total: totalMembers,
-          active: activeMembers,
-          admins: adminCount,
-          members: activeMembers - adminCount,
-        },
-        invites: {
-          pending: pendingInvites,
-          total: totalInvites,
-          accepted: totalInvites - pendingInvites,
-        },
-      };
-    } catch (error) {
-      console.error('Get workspace stats error:', error);
-      return {};
-    }
+    // This is a stub for now, can be extended for analytics
+    const [
+      totalMembers,
+      activeMembers,
+      adminCount,
+      pendingInvites,
+      totalInvites,
+    ] = await Promise.all([
+      prisma.membership.count({ where: { workspaceId } }),
+      prisma.membership.count({
+        where: { workspaceId, isActive: true, user: { isActive: true } },
+      }),
+      prisma.membership.count({
+        where: { workspaceId, role: 'ADMIN', isActive: true },
+      }),
+      prisma.invite.count({
+        where: { workspaceId, used: false, expiresAt: { gt: new Date() } },
+      }),
+      prisma.invite.count({ where: { workspaceId } }),
+    ]);
+    return {
+      members: {
+        total: totalMembers,
+        active: activeMembers,
+        admins: adminCount,
+        members: activeMembers - adminCount,
+      },
+      invites: {
+        pending: pendingInvites,
+        total: totalInvites,
+        accepted: totalInvites - pendingInvites,
+      },
+    };
   }
 
   /**
    * Validate workspace access for user
-   * @param {string} userId - User ID
-   * @param {string} workspaceId - Workspace ID
-   * @returns {Promise<Object>} Validation result
    */
   async validateWorkspaceAccess(userId, workspaceId) {
-    try {
-      const membership = await prisma.membership.findFirst({
-        where: {
-          userId,
-          workspaceId,
-          isActive: true,
-          user: { isActive: true },
-          workspace: { isActive: true },
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        memberships: {
+          where: { workspaceId, isActive: true },
+          include: {
+            workspace: {
+              select: { id: true, name: true, domain: true, isActive: true },
+            },
+          },
         },
-        include: {
-          workspace: true,
-        },
-      });
-
-      if (!membership) {
-        return {
-          success: false,
-          result: WORKSPACE_RESULTS.INVALID_PERMISSIONS,
-          message: 'User does not have access to this workspace',
-        };
-      }
-
-      return {
-        success: true,
-        result: WORKSPACE_RESULTS.SUCCESS,
-        data: {
-          membership,
-          workspace: membership.workspace,
-        },
-      };
-    } catch (error) {
-      console.error('Validate workspace access error:', error);
-      return {
-        success: false,
-        result: WORKSPACE_RESULTS.OPERATION_FAILED,
-        message: 'Failed to validate workspace access',
-      };
-    }
+      },
+    });
+    if (!user || !user.isActive) return null;
+    const membership = user.memberships[0];
+    if (!membership || !membership.workspace.isActive) return null;
+    return { user, workspace: membership.workspace, role: membership.role };
   }
 
   /**
    * Check if user has specific workspace permission
-   * @param {string} userId - User ID
-   * @param {string} workspaceId - Workspace ID
-   * @param {string} requiredRole - Required role
-   * @returns {Promise<boolean>} Whether user has permission
    */
   async hasWorkspacePermission(userId, workspaceId, requiredRole) {
-    try {
-      const membership = await prisma.membership.findFirst({
-        where: {
-          userId,
-          workspaceId,
-          isActive: true,
-          user: { isActive: true },
-        },
-      });
-
-      if (!membership) {
-        return false;
-      }
-
-      // Admin has all permissions
-      if (membership.role === 'ADMIN') {
-        return true;
-      }
-
-      // Check specific role requirement
-      return membership.role === requiredRole;
-    } catch (error) {
-      console.error('Check workspace permission error:', error);
-      return false;
-    }
+    const membership = await prisma.membership.findFirst({
+      where: { userId, workspaceId, isActive: true, user: { isActive: true } },
+    });
+    if (!membership) return false;
+    if (membership.role === 'ADMIN') return true;
+    return membership.role === requiredRole;
   }
 
   /**
    * Get workspace service metrics
-   * @returns {Object} Workspace service metrics
    */
   getMetrics() {
-    return {
-      ...this.workspaceMetrics,
-      timestamp: new Date().toISOString(),
-    };
-  }
-
-  /**
-   * Log workspace events
-   * @param {string} event - Event type
-   * @param {Object} data - Event data
-   * @private
-   */
-  _logWorkspaceEvent(event, data) {
-    const logEntry = {
-      timestamp: new Date().toISOString(),
-      event,
-      data,
-      source: 'WORKSPACE_SERVICE',
-    };
-
-    if (event === WORKSPACE_EVENTS.SECURITY_EVENT) {
-      console.warn('🏢 Workspace Security Event:', logEntry);
-    } else if (config.logging.level === 'debug') {
-      console.log('🏢 Workspace Event:', logEntry);
-    }
-
-    // In production, send to audit log service
-    if (config.isProduction()) {
-      // TODO: Send to audit log service
-    }
+    return { ...this.workspaceMetrics, timestamp: new Date().toISOString() };
   }
 }
 
-// Create singleton instance
 const workspaceService = new WorkspaceService();
 
-// Export workspace service
 module.exports = {
-  // Main service instance
   workspaceService,
-
-  // Service methods
   getWorkspaceDetails: (workspaceId, options) =>
     workspaceService.getWorkspaceDetails(workspaceId, options),
   updateWorkspace: (workspaceId, updateData, options) =>
@@ -1165,18 +642,9 @@ module.exports = {
     workspaceService.changeMemberRole(workspaceId, memberId, newRole, options),
   getWorkspaceStats: (workspaceId) =>
     workspaceService.getWorkspaceStats(workspaceId),
-
-  // Validation methods
   validateWorkspaceAccess: (userId, workspaceId) =>
     workspaceService.validateWorkspaceAccess(userId, workspaceId),
   hasWorkspacePermission: (userId, workspaceId, requiredRole) =>
     workspaceService.hasWorkspacePermission(userId, workspaceId, requiredRole),
-
-  // Utilities
   getMetrics: () => workspaceService.getMetrics(),
-
-  // Constants
-  WORKSPACE_RESULTS,
-  WORKSPACE_EVENTS,
-  WORKSPACE_ROLES,
 };

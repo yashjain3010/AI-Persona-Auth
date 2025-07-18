@@ -21,37 +21,44 @@
  * @version 1.0.0
  */
 
-const config = require('../config');
-const logger = require('./logger');
+const config = require("../config");
+const logger = require("./logger");
+const {
+  generateResponseId,
+  generateTimestamp,
+  sanitizeSensitiveData,
+  buildRequestContext,
+  calculatePerformanceMetrics,
+} = require("./common");
 
 /**
  * Standard Response Status Codes
  */
 const RESPONSE_STATUS = {
-  SUCCESS: 'success',
-  ERROR: 'error',
-  FAIL: 'fail',
+  SUCCESS: "success",
+  ERROR: "error",
+  FAIL: "fail",
 };
 
 /**
  * Response Types
  */
 const RESPONSE_TYPES = {
-  SINGLE: 'single',
-  LIST: 'list',
-  PAGINATED: 'paginated',
-  STREAM: 'stream',
-  BINARY: 'binary',
+  SINGLE: "single",
+  LIST: "list",
+  PAGINATED: "paginated",
+  STREAM: "stream",
+  BINARY: "binary",
 };
 
 /**
  * Cache Control Headers
  */
 const CACHE_CONTROL = {
-  NO_CACHE: 'no-cache, no-store, must-revalidate',
-  PUBLIC: 'public, max-age=300', // 5 minutes
-  PRIVATE: 'private, max-age=60', // 1 minute
-  LONG_TERM: 'public, max-age=86400', // 24 hours
+  NO_CACHE: "no-cache, no-store, must-revalidate",
+  PUBLIC: "public, max-age=300", // 5 minutes
+  PRIVATE: "private, max-age=60", // 1 minute
+  LONG_TERM: "public, max-age=86400", // 24 hours
 };
 
 /**
@@ -61,9 +68,9 @@ class ApiResponse {
   constructor(
     statusCode = 200,
     data = null,
-    message = 'Success',
+    message = "Success",
     metadata = null,
-    type = RESPONSE_TYPES.SINGLE,
+    type = RESPONSE_TYPES.SINGLE
   ) {
     this.success = statusCode >= 200 && statusCode < 300;
     this.statusCode = statusCode;
@@ -71,10 +78,10 @@ class ApiResponse {
     this.data = data;
     this.metadata = metadata || {};
     this.type = type;
-    this.timestamp = new Date().toISOString();
+    this.timestamp = generateTimestamp();
 
     // Add response ID for tracking
-    this.responseId = require('crypto').randomUUID();
+    this.responseId = require("crypto").randomUUID();
   }
 
   /**
@@ -139,22 +146,22 @@ class ApiResponse {
    * Sanitize sensitive data for production
    */
   sanitizeData(data) {
-    if (!data || typeof data !== 'object') {
+    if (!data || typeof data !== "object") {
       return data;
     }
 
     // Fields to remove in production
     const sensitiveFields = [
-      'password',
-      'passwordHash',
-      'secret',
-      'token',
-      'refreshToken',
-      'apiKey',
-      'privateKey',
-      'salt',
-      'resetToken',
-      'verificationToken',
+      "password",
+      "passwordHash",
+      "secret",
+      "token",
+      "refreshToken",
+      "apiKey",
+      "privateKey",
+      "salt",
+      "resetToken",
+      "verificationToken",
     ];
 
     const sanitized = JSON.parse(JSON.stringify(data));
@@ -164,7 +171,7 @@ class ApiResponse {
         return obj.map(removeSensitiveFields);
       }
 
-      if (obj && typeof obj === 'object') {
+      if (obj && typeof obj === "object") {
         const cleaned = {};
         for (const [key, value] of Object.entries(obj)) {
           if (!sensitiveFields.includes(key.toLowerCase())) {
@@ -214,25 +221,25 @@ class ApiResponse {
 
     // Set cache control headers
     if (this.metadata.cacheControl) {
-      res.setHeader('Cache-Control', this.metadata.cacheControl);
+      res.setHeader("Cache-Control", this.metadata.cacheControl);
     } else {
       // Default cache control based on response type
       switch (this.type) {
         case RESPONSE_TYPES.SINGLE:
-          res.setHeader('Cache-Control', CACHE_CONTROL.PRIVATE);
+          res.setHeader("Cache-Control", CACHE_CONTROL.PRIVATE);
           break;
         case RESPONSE_TYPES.LIST:
         case RESPONSE_TYPES.PAGINATED:
-          res.setHeader('Cache-Control', CACHE_CONTROL.NO_CACHE);
+          res.setHeader("Cache-Control", CACHE_CONTROL.NO_CACHE);
           break;
         default:
-          res.setHeader('Cache-Control', CACHE_CONTROL.NO_CACHE);
+          res.setHeader("Cache-Control", CACHE_CONTROL.NO_CACHE);
       }
     }
 
     // Set security headers
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
 
     // Log response
     this.logResponse(req);
@@ -265,9 +272,9 @@ class ApiResponse {
 
     // Log based on status code
     if (this.statusCode >= 400) {
-      logger.warn('API Response (Error)', logData);
+      logger.warn("API Response (Error)", logData);
     } else {
-      logger.info('API Response (Success)', logData);
+      logger.info("API Response (Success)", logData);
     }
   }
 }
@@ -276,7 +283,7 @@ class ApiResponse {
  * Success Response Factory
  */
 class SuccessResponse extends ApiResponse {
-  constructor(data, message = 'Success', metadata = null) {
+  constructor(data, message = "Success", metadata = null) {
     super(200, data, message, metadata, RESPONSE_TYPES.SINGLE);
   }
 }
@@ -287,8 +294,8 @@ class SuccessResponse extends ApiResponse {
 class CreatedResponse extends ApiResponse {
   constructor(
     data,
-    message = 'Resource created successfully',
-    metadata = null,
+    message = "Resource created successfully",
+    metadata = null
   ) {
     super(201, data, message, metadata, RESPONSE_TYPES.SINGLE);
   }
@@ -298,7 +305,7 @@ class CreatedResponse extends ApiResponse {
  * No Content Response Factory
  */
 class NoContentResponse extends ApiResponse {
-  constructor(message = 'Operation completed successfully') {
+  constructor(message = "Operation completed successfully") {
     super(204, null, message, null, RESPONSE_TYPES.SINGLE);
   }
 }
@@ -307,7 +314,7 @@ class NoContentResponse extends ApiResponse {
  * List Response Factory
  */
 class ListResponse extends ApiResponse {
-  constructor(data, message = 'Data retrieved successfully', metadata = null) {
+  constructor(data, message = "Data retrieved successfully", metadata = null) {
     super(200, data, message, metadata, RESPONSE_TYPES.LIST);
   }
 }
@@ -319,8 +326,8 @@ class PaginatedResponse extends ApiResponse {
   constructor(
     data,
     pagination,
-    message = 'Data retrieved successfully',
-    metadata = null,
+    message = "Data retrieved successfully",
+    metadata = null
   ) {
     super(200, data, message, metadata, RESPONSE_TYPES.PAGINATED);
     this.setPagination(pagination);
@@ -338,7 +345,7 @@ class ResponseBuilder {
   reset() {
     this._statusCode = 200;
     this._data = null;
-    this._message = 'Success';
+    this._message = "Success";
     this._metadata = {};
     this._type = RESPONSE_TYPES.SINGLE;
     this._cacheControl = null;
@@ -387,7 +394,7 @@ class ResponseBuilder {
       this._data,
       this._message,
       this._metadata,
-      this._type,
+      this._type
     );
 
     if (this._cacheControl) {
@@ -405,7 +412,7 @@ class ResponseUtils {
   /**
    * Create success response
    */
-  static success(data, message = 'Success', metadata = null) {
+  static success(data, message = "Success", metadata = null) {
     return new SuccessResponse(data, message, metadata);
   }
 
@@ -414,8 +421,8 @@ class ResponseUtils {
    */
   static created(
     data,
-    message = 'Resource created successfully',
-    metadata = null,
+    message = "Resource created successfully",
+    metadata = null
   ) {
     return new CreatedResponse(data, message, metadata);
   }
@@ -423,14 +430,14 @@ class ResponseUtils {
   /**
    * Create no content response
    */
-  static noContent(message = 'Operation completed successfully') {
+  static noContent(message = "Operation completed successfully") {
     return new NoContentResponse(message);
   }
 
   /**
    * Create list response
    */
-  static list(data, message = 'Data retrieved successfully', metadata = null) {
+  static list(data, message = "Data retrieved successfully", metadata = null) {
     return new ListResponse(data, message, metadata);
   }
 
@@ -440,8 +447,8 @@ class ResponseUtils {
   static paginated(
     data,
     pagination,
-    message = 'Data retrieved successfully',
-    metadata = null,
+    message = "Data retrieved successfully",
+    metadata = null
   ) {
     return new PaginatedResponse(data, pagination, message, metadata);
   }
@@ -456,8 +463,8 @@ class ResponseUtils {
   /**
    * Transform service response to API response
    */
-  static fromService(serviceResponse, defaultMessage = 'Operation completed') {
-    if (!serviceResponse || typeof serviceResponse !== 'object') {
+  static fromService(serviceResponse, defaultMessage = "Operation completed") {
+    if (!serviceResponse || typeof serviceResponse !== "object") {
       return new SuccessResponse(serviceResponse, defaultMessage);
     }
 
@@ -465,7 +472,7 @@ class ResponseUtils {
 
     if (success === false) {
       // This should be handled by error middleware
-      throw new Error(message || 'Service operation failed');
+      throw new Error(message || "Service operation failed");
     }
 
     if (pagination) {
@@ -473,7 +480,7 @@ class ResponseUtils {
         data,
         pagination,
         message || defaultMessage,
-        metadata,
+        metadata
       );
     }
 
@@ -487,13 +494,13 @@ class ResponseUtils {
   /**
    * Format validation errors
    */
-  static validationError(errors, message = 'Validation failed') {
+  static validationError(errors, message = "Validation failed") {
     return new ApiResponse(
       400,
       null,
       message,
       { errors },
-      RESPONSE_TYPES.SINGLE,
+      RESPONSE_TYPES.SINGLE
     );
   }
 
@@ -501,12 +508,12 @@ class ResponseUtils {
    * Format health check response
    */
   static healthCheck(status, checks = {}) {
-    const isHealthy = status === 'healthy';
+    const isHealthy = status === "healthy";
     const statusCode = isHealthy ? 200 : 503;
-    const message = isHealthy ? 'System is healthy' : 'System is unhealthy';
+    const message = isHealthy ? "System is healthy" : "System is unhealthy";
 
     return new ApiResponse(statusCode, { status, checks }, message, {
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
       environment: config.NODE_ENV,
     });
   }
@@ -536,7 +543,7 @@ const extendExpressResponse = (res) => {
   res.paginated = (data, pagination, message, metadata) => {
     return ResponseUtils.paginated(data, pagination, message, metadata).send(
       res,
-      res.req,
+      res.req
     );
   };
 

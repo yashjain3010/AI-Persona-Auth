@@ -21,6 +21,8 @@
 
 require('dotenv').config();
 
+const { generateTimestamp } = require('../utils/common');
+
 /**
  * Configuration Error Class
  * Extends the standard Error with configuration-specific context
@@ -32,7 +34,7 @@ class ConfigurationError extends Error {
     this.key = key;
     this.value = value;
     this.suggestions = suggestions;
-    this.timestamp = new Date().toISOString();
+    this.timestamp = generateTimestamp();
   }
 }
 
@@ -60,7 +62,9 @@ class ConfigurationValidator {
 
     if (!value && defaultValue === undefined) {
       const error = new ConfigurationError(
-        `Missing required environment variable: ${key}${description ? ` (${description})` : ''}`,
+        `Missing required environment variable: ${key}${
+          description ? ` (${description})` : ''
+        }`,
         key,
         null,
         suggestions,
@@ -72,9 +76,11 @@ class ConfigurationValidator {
     if (!value && defaultValue !== undefined) {
       this.warnings.push({
         key,
-        message: `Using default value for ${key}: ${defaultValue}${description ? ` (${description})` : ''}`,
+        message: `Using default value for ${key}: ${defaultValue}${
+          description ? ` (${description})` : ''
+        }`,
         defaultValue,
-        timestamp: new Date().toISOString(),
+        timestamp: generateTimestamp(),
       });
     }
 
@@ -96,9 +102,11 @@ class ConfigurationValidator {
       if (defaultValue !== undefined) {
         this.warnings.push({
           key,
-          message: `Using default integer value for ${key}: ${defaultValue}${description ? ` (${description})` : ''}`,
+          message: `Using default integer value for ${key}: ${defaultValue}${
+            description ? ` (${description})` : ''
+          }`,
           defaultValue,
-          timestamp: new Date().toISOString(),
+          timestamp: generateTimestamp(),
         });
       }
       return defaultValue;
@@ -108,7 +116,9 @@ class ConfigurationValidator {
 
     if (isNaN(parsed)) {
       throw new ConfigurationError(
-        `Invalid integer value for ${key}: ${value}${description ? ` (${description})` : ''}`,
+        `Invalid integer value for ${key}: ${value}${
+          description ? ` (${description})` : ''
+        }`,
         key,
         value,
         ['Provide a valid integer value'],
@@ -117,7 +127,9 @@ class ConfigurationValidator {
 
     if (min !== undefined && parsed < min) {
       throw new ConfigurationError(
-        `Value for ${key} (${parsed}) is below minimum (${min})${description ? ` (${description})` : ''}`,
+        `Value for ${key} (${parsed}) is below minimum (${min})${
+          description ? ` (${description})` : ''
+        }`,
         key,
         value,
         [`Use a value >= ${min}`],
@@ -126,7 +138,9 @@ class ConfigurationValidator {
 
     if (max !== undefined && parsed > max) {
       throw new ConfigurationError(
-        `Value for ${key} (${parsed}) exceeds maximum (${max})${description ? ` (${description})` : ''}`,
+        `Value for ${key} (${parsed}) exceeds maximum (${max})${
+          description ? ` (${description})` : ''
+        }`,
         key,
         value,
         [`Use a value <= ${max}`],
@@ -151,9 +165,11 @@ class ConfigurationValidator {
       if (defaultValue !== undefined) {
         this.warnings.push({
           key,
-          message: `Using default boolean value for ${key}: ${defaultValue}${description ? ` (${description})` : ''}`,
+          message: `Using default boolean value for ${key}: ${defaultValue}${
+            description ? ` (${description})` : ''
+          }`,
           defaultValue,
-          timestamp: new Date().toISOString(),
+          timestamp: generateTimestamp(),
         });
       }
       return defaultValue;
@@ -172,7 +188,9 @@ class ConfigurationValidator {
     }
 
     throw new ConfigurationError(
-      `Invalid boolean value for ${key}: ${value}${description ? ` (${description})` : ''}`,
+      `Invalid boolean value for ${key}: ${value}${
+        description ? ` (${description})` : ''
+      }`,
       key,
       value,
       ['Use: true, false, 1, 0, yes, no, on, off, enabled, disabled'],
@@ -194,9 +212,11 @@ class ConfigurationValidator {
       if (defaultValue.length > 0) {
         this.warnings.push({
           key,
-          message: `Using default array value for ${key}: [${defaultValue.join(', ')}]${description ? ` (${description})` : ''}`,
+          message: `Using default array value for ${key}: [${defaultValue.join(
+            ', ',
+          )}]${description ? ` (${description})` : ''}`,
           defaultValue,
-          timestamp: new Date().toISOString(),
+          timestamp: generateTimestamp(),
         });
       }
       return defaultValue;
@@ -321,10 +341,14 @@ const config = {
 
   // === Database Configuration ===
   database: {
-    url: validator.requireEnv('DATABASE_URL', undefined, {
-      description: 'PostgreSQL database connection string',
-      suggestions: ['postgresql://user:pass@localhost:5432/dbname'],
-    }),
+    url: validator.requireEnv(
+      'DATABASE_URL',
+      'postgresql://user:pass@localhost:5432/ai_persona_db',
+      {
+        description: 'PostgreSQL database connection string',
+        suggestions: ['postgresql://user:pass@localhost:5432/dbname'],
+      },
+    ),
     ssl: validator.getBoolEnv('DATABASE_SSL', false, {
       description: 'Enable SSL for database connections',
     }),
@@ -360,14 +384,20 @@ const config = {
   auth: {
     // JWT Configuration
     jwt: {
-      secret: validator.requireEnv('JWT_SECRET', undefined, {
+      secret: validator.requireEnv('JWT_SECRET', 'your-fallback-secret-key', {
         description: 'JWT signing secret (minimum 32 characters)',
         suggestions: ['Generate a strong random string: openssl rand -hex 32'],
       }),
-      refreshSecret: validator.requireEnv('JWT_REFRESH_SECRET', undefined, {
-        description: 'JWT refresh token signing secret',
-        suggestions: ['Generate a strong random string: openssl rand -hex 32'],
-      }),
+      refreshSecret: validator.requireEnv(
+        'JWT_REFRESH_SECRET',
+        'your-refresh-secret-key',
+        {
+          description: 'JWT refresh token signing secret',
+          suggestions: [
+            'Generate a strong random string: openssl rand -hex 32',
+          ],
+        },
+      ),
       accessTokenExpiry: validator.requireEnv('JWT_EXPIRES_IN', '15m', {
         description: 'Access token expiration time',
       }),
@@ -438,7 +468,9 @@ const config = {
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
       callbackUrl: validator.requireEnv(
         'GOOGLE_CALLBACK_URL',
-        '/api/auth/google/callback',
+        `${
+          process.env.API_URL || `http://localhost:${process.env.PORT || 3001}`
+        }/api/v1/auth/google/callback`,
         {
           description: 'Google OAuth callback URL',
         },
@@ -451,7 +483,9 @@ const config = {
       clientSecret: process.env.MICROSOFT_CLIENT_SECRET,
       callbackUrl: validator.requireEnv(
         'MICROSOFT_CALLBACK_URL',
-        '/api/auth/microsoft/callback',
+        `${
+          process.env.API_URL || `http://localhost:${process.env.PORT || 3001}`
+        }/api/v1/auth/microsoft/callback`,
         {
           description: 'Microsoft OAuth callback URL',
         },
@@ -509,10 +543,35 @@ const config = {
 
   // === Security Settings ===
   security: {
-    // Encryption
-    cookieSecret: validator.requireEnv('COOKIE_SECRET', undefined, {
+    // JWT and Cookie secrets
+    jwtSecret: validator.requireEnv('JWT_SECRET', 'your-fallback-secret-key', {
+      description: 'JWT signing secret',
+    }),
+    jwtExpiresIn: validator.requireEnv('JWT_EXPIRES_IN', '7d', {
+      description: 'JWT token expiration time',
+    }),
+    jwtRefreshSecret: validator.requireEnv(
+      'JWT_REFRESH_SECRET',
+      'your-refresh-secret-key',
+      {
+        description: 'JWT refresh token secret',
+      },
+    ),
+    cookieSecret: validator.requireEnv('COOKIE_SECRET', 'your-cookie-secret', {
       description: 'Secret for cookie signing',
       suggestions: ['Generate a strong random string: openssl rand -hex 32'],
+    }),
+    sessionSecret: validator.requireEnv(
+      'SESSION_SECRET',
+      'your-session-secret',
+      {
+        description: 'Session secret for express-session',
+      },
+    ),
+    saltRounds: validator.getIntEnv('SALT_ROUNDS', 12, {
+      min: 10,
+      max: 15,
+      description: 'Bcrypt salt rounds',
     }),
 
     // Rate Limiting
@@ -541,9 +600,13 @@ const config = {
 
     // CORS Configuration
     cors: {
-      origin: validator.getArrayEnv('CORS_ORIGIN', ['http://localhost:3001'], {
-        description: 'Allowed CORS origins',
-      }),
+      origin: validator.getArrayEnv(
+        'CORS_ORIGIN',
+        ['http://localhost:3001', 'http://localhost:5173'],
+        {
+          description: 'Allowed CORS origins',
+        },
+      ),
       credentials: validator.getBoolEnv('CORS_CREDENTIALS', true, {
         description: 'Allow credentials in CORS requests',
       }),
@@ -559,82 +622,78 @@ const config = {
         description: 'CSP report-only mode',
       }),
     },
+
+    // Helmet Security Headers Configuration
+    helmet: {
+      contentSecurityPolicy: validator.getBoolEnv('HELMET_CSP_ENABLED', true, {
+        description: 'Enable Helmet Content Security Policy',
+      }),
+      hsts: validator.getBoolEnv('HELMET_HSTS_ENABLED', true, {
+        description: 'Enable HTTP Strict Transport Security',
+      }),
+      frameguard: validator.getBoolEnv('HELMET_FRAMEGUARD_ENABLED', true, {
+        description: 'Enable X-Frame-Options protection',
+      }),
+      xssFilter: validator.getBoolEnv('HELMET_XSS_FILTER_ENABLED', true, {
+        description: 'Enable XSS protection',
+      }),
+      noSniff: validator.getBoolEnv('HELMET_NOSNIFF_ENABLED', true, {
+        description: 'Enable X-Content-Type-Options nosniff',
+      }),
+      referrerPolicy: validator.getBoolEnv(
+        'HELMET_REFERRER_POLICY_ENABLED',
+        true,
+        {
+          description: 'Enable Referrer Policy',
+        },
+      ),
+      permissionsPolicy: validator.getBoolEnv(
+        'HELMET_PERMISSIONS_POLICY_ENABLED',
+        true,
+        {
+          description: 'Enable Permissions Policy',
+        },
+      ),
+    },
   },
 
-  // === Logging Configuration ===
-  logging: {
-    level: validator.requireEnv('LOG_LEVEL', 'info', {
-      description: 'Logging level',
-      suggestions: ['error', 'warn', 'info', 'http', 'debug', 'trace'],
-    }),
-    enableFileLogging: validator.getBoolEnv('LOG_FILE_ENABLED', true, {
-      description: 'Enable file logging',
-    }),
-    enableConsoleLogging: validator.getBoolEnv('LOG_CONSOLE_ENABLED', true, {
-      description: 'Enable console logging',
-    }),
-
-    // HTTP endpoint logging
-    httpEndpoint: process.env.LOG_HTTP_ENDPOINT,
-    httpHost: process.env.LOG_HTTP_HOST,
-    httpPort: validator.getIntEnv('LOG_HTTP_PORT', 443, {
-      min: 1,
-      max: 65535,
-      description: 'HTTP logging endpoint port',
-    }),
-    httpPath: validator.requireEnv('LOG_HTTP_PATH', '/logs', {
-      description: 'HTTP logging endpoint path',
-    }),
-    httpSsl: validator.getBoolEnv('LOG_HTTP_SSL', true, {
-      description: 'Use SSL for HTTP logging',
-    }),
-    httpAuth: process.env.LOG_HTTP_AUTH,
-  },
-
-  // === Workspace & Multi-tenancy ===
-  workspace: {
-    // Personal email domains that are blocked by default
-    blockedDomains: validator.getArrayEnv(
-      'BLOCKED_DOMAINS',
-      [
-        'gmail.com',
-        'yahoo.com',
-        'hotmail.com',
-        'outlook.com',
-        'icloud.com',
-        'aol.com',
-        'protonmail.com',
-        'mail.com',
-      ],
-      {
-        description: 'Blocked personal email domains',
-      },
-    ),
-
-    // Workspace creation settings
-    autoCreateWorkspace: validator.getBoolEnv('AUTO_CREATE_WORKSPACE', true, {
-      description: 'Automatically create workspaces for new domains',
-    }),
-    maxMembersPerWorkspace: validator.getIntEnv(
-      'MAX_MEMBERS_PER_WORKSPACE',
-      1000,
-      {
-        min: 1,
-        description: 'Maximum members per workspace',
-      },
-    ),
-
-    // Invite settings
-    inviteExpiry: validator.getIntEnv('INVITE_EXPIRY_HOURS', 168, {
-      min: 1,
-      max: 8760,
-      description: 'Invite expiration time in hours',
-    }),
-    maxPendingInvites: validator.getIntEnv('MAX_PENDING_INVITES', 50, {
-      min: 1,
-      description: 'Maximum pending invites per workspace',
-    }),
-  },
+  // === Compatibility with existing code ===
+  // These maintain backward compatibility
+  PORT: validator.getIntEnv('PORT', 3000, {
+    min: 1,
+    max: 65535,
+    description: 'Server port number',
+  }),
+  DATABASE_URL: validator.requireEnv(
+    'DATABASE_URL',
+    'postgresql://user:pass@localhost:5432/ai_persona_db',
+    {
+      description: 'PostgreSQL database connection string',
+    },
+  ),
+  FRONTEND_URL: validator.requireEnv('FRONTEND_URL', 'http://localhost:5173', {
+    description: 'Frontend application URL',
+  }),
+  API_VERSION: 'v1',
+  API_PREFIX: '/api/v1',
+  RATE_LIMIT_WINDOW: validator.getIntEnv('RATE_LIMIT_WINDOW_MS', 900000, {
+    min: 60000,
+    description: 'Rate limit window in milliseconds',
+  }),
+  RATE_LIMIT_MAX: validator.getIntEnv('RATE_LIMIT_MAX_REQUESTS', 100, {
+    min: 1,
+    description: 'Maximum requests per window',
+  }),
+  BODY_LIMIT: validator.requireEnv('BODY_LIMIT', '10mb', {
+    description: 'Request body size limit',
+  }),
+  LOG_LEVEL: validator.requireEnv('LOG_LEVEL', 'info', {
+    description: 'Logging level',
+    suggestions: ['error', 'warn', 'info', 'http', 'debug', 'trace'],
+  }),
+  LOG_FORMAT: validator.requireEnv('LOG_FORMAT', 'combined', {
+    description: 'HTTP log format',
+  }),
 
   // === Documentation ===
   docs: {
@@ -644,6 +703,25 @@ const config = {
     path: validator.requireEnv('DOCS_PATH', '/api-docs', {
       description: 'API documentation path',
     }),
+  },
+
+  // === Session Configuration ===
+  session: {
+    secret: validator.requireEnv('SESSION_SECRET', 'your-session-secret', {
+      description: 'Session secret',
+    }),
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: validator.getBoolEnv('SESSION_SECURE', false, {
+        description: 'Use secure session cookies',
+      }),
+      httpOnly: true,
+      maxAge: validator.getIntEnv('SESSION_MAX_AGE', 86400000, {
+        min: 60000,
+        description: 'Session max age in milliseconds',
+      }),
+    },
   },
 
   // === Development Settings ===
@@ -660,6 +738,23 @@ const config = {
     mockEmailSending: validator.getBoolEnv('MOCK_EMAIL_SENDING', true, {
       description: 'Mock email sending in development',
     }),
+  },
+
+  // === Helper functions ===
+  isDevelopment() {
+    return this.NODE_ENV === 'development';
+  },
+
+  isProduction() {
+    return this.NODE_ENV === 'production';
+  },
+
+  isTest() {
+    return this.NODE_ENV === 'test';
+  },
+
+  isStaging() {
+    return this.NODE_ENV === 'staging';
   },
 };
 
@@ -746,10 +841,12 @@ const getSafeConfig = () => {
     'auth.jwt.secret',
     'auth.jwt.refreshSecret',
     'security.cookieSecret',
+    'security.jwtSecret',
+    'security.jwtRefreshSecret',
+    'security.sessionSecret',
     'email.smtp.password',
     'oauth.google.clientSecret',
     'oauth.microsoft.clientSecret',
-    'logging.httpAuth',
   ];
 
   sensitiveKeys.forEach((keyPath) => {
@@ -777,6 +874,13 @@ const getSafeConfig = () => {
     );
   }
 
+  if (safeConfig.DATABASE_URL) {
+    safeConfig.DATABASE_URL = safeConfig.DATABASE_URL.replace(
+      /:[^:@]*@/,
+      ':***@',
+    );
+  }
+
   return safeConfig;
 };
 
@@ -791,7 +895,7 @@ const getConfigHealth = () => {
     status: validationSummary.hasErrors ? 'unhealthy' : 'healthy',
     environment: config.NODE_ENV,
     validationSummary,
-    timestamp: new Date().toISOString(),
+    timestamp: generateTimestamp(),
   };
 };
 

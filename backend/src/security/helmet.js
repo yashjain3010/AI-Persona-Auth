@@ -17,34 +17,54 @@
  * @version 1.0.0
  */
 
-const helmet = require('helmet');
-const crypto = require('crypto');
-const config = require('../config');
+const helmet = require("helmet");
+const crypto = require("crypto");
+const config = require("../config");
+const { generateTimestamp, sanitizeSensitiveData } = require("../utils/common");
 
 /**
  * Security Policy Levels
  */
 const SECURITY_LEVELS = {
-  STRICT: 'strict', // Maximum security for production
-  BALANCED: 'balanced', // Good security with usability
-  PERMISSIVE: 'permissive', // Development-friendly
+  STRICT: "strict", // Maximum security for production
+  BALANCED: "balanced", // Good security with usability
+  PERMISSIVE: "permissive", // Development-friendly
 };
 
 /**
  * CSP Directive Types
  */
 const CSP_DIRECTIVES = {
-  DEFAULT_SRC: 'default-src',
-  SCRIPT_SRC: 'script-src',
-  STYLE_SRC: 'style-src',
-  IMG_SRC: 'img-src',
-  FONT_SRC: 'font-src',
-  CONNECT_SRC: 'connect-src',
-  MEDIA_SRC: 'media-src',
-  OBJECT_SRC: 'object-src',
-  FRAME_SRC: 'frame-src',
-  WORKER_SRC: 'worker-src',
-  MANIFEST_SRC: 'manifest-src',
+  DEFAULT_SRC: "default-src",
+  SCRIPT_SRC: "script-src",
+  STYLE_SRC: "style-src",
+  IMG_SRC: "img-src",
+  FONT_SRC: "font-src",
+  CONNECT_SRC: "connect-src",
+  MEDIA_SRC: "media-src",
+  OBJECT_SRC: "object-src",
+  FRAME_SRC: "frame-src",
+  WORKER_SRC: "worker-src",
+  MANIFEST_SRC: "manifest-src",
+};
+
+/**
+ * Common CDN and external sources
+ */
+const TRUSTED_SOURCES = {
+  CDN: [
+    "https://cdn.jsdelivr.net",
+    "https://cdnjs.cloudflare.com",
+    "https://unpkg.com",
+  ],
+  FONTS: ["https://fonts.gstatic.com", "https://fonts.googleapis.com"],
+  IMAGES: [
+    "https://images.unsplash.com",
+    "https://avatars.githubusercontent.com",
+    "https://lh3.googleusercontent.com",
+  ],
+  AUTH: ["https://accounts.google.com", "https://login.microsoftonline.com"],
+  API: ["https://api.github.com"],
 };
 
 /**
@@ -67,40 +87,16 @@ class SecurityHeadersManager {
   }
 
   /**
-   * Get Content Security Policy configuration
-   * @param {Object} options - CSP options
-   * @returns {Object} CSP configuration
+   * Get base directives for CSP
+   * @param {string} level - Security level
+   * @returns {Object} Base CSP directives
    */
-  getCSPConfig(options = {}) {
-    const { level = SECURITY_LEVELS.BALANCED, nonce, workspaceId } = options;
-
-    const baseDirectives = {
+  getBaseDirectives(level) {
+    return {
       [CSP_DIRECTIVES.DEFAULT_SRC]: ["'self'"],
-      [CSP_DIRECTIVES.SCRIPT_SRC]: this.getScriptSrcDirectives(level, nonce),
-      [CSP_DIRECTIVES.STYLE_SRC]: this.getStyleSrcDirectives(level, nonce),
-      [CSP_DIRECTIVES.IMG_SRC]: this.getImgSrcDirectives(level),
-      [CSP_DIRECTIVES.FONT_SRC]: this.getFontSrcDirectives(level),
-      [CSP_DIRECTIVES.CONNECT_SRC]: this.getConnectSrcDirectives(level),
-      [CSP_DIRECTIVES.MEDIA_SRC]: this.getMediaSrcDirectives(level),
       [CSP_DIRECTIVES.OBJECT_SRC]: ["'none'"],
-      [CSP_DIRECTIVES.FRAME_SRC]: this.getFrameSrcDirectives(level),
       [CSP_DIRECTIVES.WORKER_SRC]: ["'self'"],
       [CSP_DIRECTIVES.MANIFEST_SRC]: ["'self'"],
-    };
-
-    // Add workspace-specific directives if needed
-    if (workspaceId) {
-      baseDirectives[CSP_DIRECTIVES.CONNECT_SRC].push(
-        `https://${workspaceId}.${config.app.domain || 'localhost'}`,
-      );
-    }
-
-    return {
-      directives: baseDirectives,
-      reportOnly: config.isDevelopment(),
-      reportUri: '/api/v1/security/csp-report',
-      upgradeInsecureRequests: config.isProduction(),
-      blockAllMixedContent: config.isProduction(),
     };
   }
 
@@ -124,11 +120,7 @@ class SecurityHeadersManager {
 
       case SECURITY_LEVELS.BALANCED:
         // Balanced: Add common CDNs
-        directives.push(
-          'https://cdn.jsdelivr.net',
-          'https://cdnjs.cloudflare.com',
-          'https://unpkg.com',
-        );
+        directives.push(...TRUSTED_SOURCES.CDN);
         break;
 
       case SECURITY_LEVELS.PERMISSIVE:
@@ -136,9 +128,7 @@ class SecurityHeadersManager {
         directives.push(
           "'unsafe-inline'",
           "'unsafe-eval'",
-          'https://cdn.jsdelivr.net',
-          'https://cdnjs.cloudflare.com',
-          'https://unpkg.com',
+          ...TRUSTED_SOURCES.CDN
         );
         break;
     }
@@ -166,9 +156,9 @@ class SecurityHeadersManager {
 
       case SECURITY_LEVELS.BALANCED:
         directives.push(
-          "'unsafe-inline'", // Often needed for CSS-in-JS
-          'https://fonts.googleapis.com',
-          'https://cdn.jsdelivr.net',
+          "'unsafe-inline'",
+          ...TRUSTED_SOURCES.FONTS,
+          ...TRUSTED_SOURCES.CDN
         );
         break;
 
@@ -176,9 +166,8 @@ class SecurityHeadersManager {
         directives.push(
           "'unsafe-inline'",
           "'unsafe-eval'",
-          'https://fonts.googleapis.com',
-          'https://cdn.jsdelivr.net',
-          'https://cdnjs.cloudflare.com',
+          ...TRUSTED_SOURCES.FONTS,
+          ...TRUSTED_SOURCES.CDN
         );
         break;
     }
@@ -192,22 +181,10 @@ class SecurityHeadersManager {
    * @returns {Array} Image source directives
    */
   getImgSrcDirectives(level) {
-    const directives = ["'self'", 'data:', 'blob:'];
+    const directives = ["'self'", "data:", "blob:"];
 
-    switch (level) {
-      case SECURITY_LEVELS.STRICT:
-        // Strict: Only self, data, and blob
-        break;
-
-      case SECURITY_LEVELS.BALANCED:
-      case SECURITY_LEVELS.PERMISSIVE:
-        directives.push(
-          'https:',
-          'https://images.unsplash.com',
-          'https://avatars.githubusercontent.com',
-          'https://lh3.googleusercontent.com', // Google profile images
-        );
-        break;
+    if (level !== SECURITY_LEVELS.STRICT) {
+      directives.push("https:", ...TRUSTED_SOURCES.IMAGES);
     }
 
     return directives;
@@ -219,13 +196,10 @@ class SecurityHeadersManager {
    * @returns {Array} Font source directives
    */
   getFontSrcDirectives(level) {
-    const directives = ["'self'", 'data:'];
+    const directives = ["'self'", "data:"];
 
     if (level !== SECURITY_LEVELS.STRICT) {
-      directives.push(
-        'https://fonts.gstatic.com',
-        'https://fonts.googleapis.com',
-      );
+      directives.push(...TRUSTED_SOURCES.FONTS);
     }
 
     return directives;
@@ -240,7 +214,7 @@ class SecurityHeadersManager {
     const directives = ["'self'"];
 
     // Add API URL
-    if (config.app.apiUrl) {
+    if (config.app?.apiUrl) {
       directives.push(config.app.apiUrl);
     }
 
@@ -250,14 +224,11 @@ class SecurityHeadersManager {
         break;
 
       case SECURITY_LEVELS.BALANCED:
-        directives.push(
-          'https://api.github.com',
-          'https://accounts.google.com',
-        );
+        directives.push(...TRUSTED_SOURCES.AUTH, ...TRUSTED_SOURCES.API);
         break;
 
       case SECURITY_LEVELS.PERMISSIVE:
-        directives.push('https:', 'wss:', 'ws:');
+        directives.push("https:", "wss:", "ws:");
         break;
     }
 
@@ -270,10 +241,10 @@ class SecurityHeadersManager {
    * @returns {Array} Media source directives
    */
   getMediaSrcDirectives(level) {
-    const directives = ["'self'", 'blob:', 'data:'];
+    const directives = ["'self'", "blob:", "data:"];
 
     if (level !== SECURITY_LEVELS.STRICT) {
-      directives.push('https:');
+      directives.push("https:");
     }
 
     return directives;
@@ -293,18 +264,50 @@ class SecurityHeadersManager {
         break;
 
       case SECURITY_LEVELS.BALANCED:
-        directives.push(
-          'https://accounts.google.com',
-          'https://login.microsoftonline.com',
-        );
+        directives.push(...TRUSTED_SOURCES.AUTH);
         break;
 
       case SECURITY_LEVELS.PERMISSIVE:
-        directives.push('https:');
+        directives.push("https:");
         break;
     }
 
     return directives;
+  }
+
+  /**
+   * Get Content Security Policy configuration
+   * @param {Object} options - CSP options
+   * @returns {Object} CSP configuration
+   */
+  getCSPConfig(options = {}) {
+    const { level = SECURITY_LEVELS.BALANCED, nonce, workspaceId } = options;
+
+    const directives = {
+      ...this.getBaseDirectives(level),
+      [CSP_DIRECTIVES.SCRIPT_SRC]: this.getScriptSrcDirectives(level, nonce),
+      [CSP_DIRECTIVES.STYLE_SRC]: this.getStyleSrcDirectives(level, nonce),
+      [CSP_DIRECTIVES.IMG_SRC]: this.getImgSrcDirectives(level),
+      [CSP_DIRECTIVES.FONT_SRC]: this.getFontSrcDirectives(level),
+      [CSP_DIRECTIVES.CONNECT_SRC]: this.getConnectSrcDirectives(level),
+      [CSP_DIRECTIVES.MEDIA_SRC]: this.getMediaSrcDirectives(level),
+      [CSP_DIRECTIVES.FRAME_SRC]: this.getFrameSrcDirectives(level),
+    };
+
+    // Add workspace-specific directives if needed
+    if (workspaceId) {
+      directives[CSP_DIRECTIVES.CONNECT_SRC].push(
+        `https://${workspaceId}.${config.app?.domain || "localhost"}`
+      );
+    }
+
+    return {
+      directives,
+      reportOnly: config.isDevelopment(),
+      reportUri: "/api/v1/security/csp-report",
+      upgradeInsecureRequests: config.isProduction(),
+      blockAllMixedContent: config.isProduction(),
+    };
   }
 
   /**
@@ -325,7 +328,7 @@ class SecurityHeadersManager {
    */
   getFrameOptionsConfig() {
     return {
-      action: config.isProduction() ? 'deny' : 'sameorigin',
+      action: config.isProduction() ? "deny" : "sameorigin",
     };
   }
 
@@ -336,8 +339,8 @@ class SecurityHeadersManager {
   getReferrerPolicyConfig() {
     return {
       policy: config.isProduction()
-        ? 'strict-origin-when-cross-origin'
-        : 'no-referrer-when-downgrade',
+        ? "strict-origin-when-cross-origin"
+        : "no-referrer-when-downgrade",
     };
   }
 
@@ -367,7 +370,7 @@ class SecurityHeadersManager {
    * @returns {string} Generated nonce
    */
   generateNonce(req) {
-    const nonce = crypto.randomBytes(16).toString('base64');
+    const nonce = crypto.randomBytes(16).toString("base64");
 
     // Cache nonce for request
     this.nonceCache.set(req.id || req.sessionID, nonce);
@@ -398,17 +401,20 @@ class SecurityHeadersManager {
 
     const helmetConfig = {
       // Content Security Policy
-      contentSecurityPolicy: config.security.helmet.contentSecurityPolicy
-        ? this.getCSPConfig({ level, nonce, workspaceId })
-        : false,
+      contentSecurityPolicy:
+        config.security?.helmet?.contentSecurityPolicy !== false
+          ? this.getCSPConfig({ level, nonce, workspaceId })
+          : false,
 
       // HTTP Strict Transport Security
-      hsts: config.security.helmet.hsts ? this.getHSTSConfig() : false,
+      hsts:
+        config.security?.helmet?.hsts !== false ? this.getHSTSConfig() : false,
 
       // X-Frame-Options
-      frameguard: config.security.helmet.frameguard
-        ? this.getFrameOptionsConfig()
-        : false,
+      frameguard:
+        config.security?.helmet?.frameguard !== false
+          ? this.getFrameOptionsConfig()
+          : false,
 
       // X-Content-Type-Options
       noSniff: true,
@@ -441,18 +447,18 @@ class SecurityHeadersManager {
       // Cross-Origin Embedder Policy
       crossOriginEmbedderPolicy: config.isProduction()
         ? {
-            policy: 'require-corp',
+            policy: "require-corp",
           }
         : false,
 
       // Cross-Origin Opener Policy
       crossOriginOpenerPolicy: {
-        policy: 'same-origin',
+        policy: "same-origin",
       },
 
       // Cross-Origin Resource Policy
       crossOriginResourcePolicy: {
-        policy: 'cross-origin',
+        policy: "cross-origin",
       },
     };
 
@@ -487,7 +493,7 @@ class SecurityHeadersManager {
     // Store report (limit to prevent memory issues)
     this.cspReports.push({
       ...report,
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
     });
 
     if (this.cspReports.length > this.maxCspReports) {
@@ -495,11 +501,11 @@ class SecurityHeadersManager {
     }
 
     // Log security violation
-    this._logSecurityEvent('CSP_VIOLATION', {
-      blockedUri: report['blocked-uri'],
-      documentUri: report['document-uri'],
-      violatedDirective: report['violated-directive'],
-      originalPolicy: report['original-policy'],
+    this._logSecurityEvent("CSP_VIOLATION", {
+      blockedUri: report["blocked-uri"],
+      documentUri: report["document-uri"],
+      violatedDirective: report["violated-directive"],
+      originalPolicy: report["original-policy"],
     });
   }
 
@@ -522,8 +528,8 @@ class SecurityHeadersManager {
    */
   createCspReportHandler() {
     return (req, res, next) => {
-      if (req.body && req.body['csp-report']) {
-        this.processCspReport(req.body['csp-report']);
+      if (req.body && req.body["csp-report"]) {
+        this.processCspReport(req.body["csp-report"]);
       }
       res.status(204).send();
     };
@@ -538,7 +544,7 @@ class SecurityHeadersManager {
       ...this.securityMetrics,
       cspReportsCount: this.cspReports.length,
       nonceCacheSize: this.nonceCache.size,
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
     };
   }
 
@@ -559,13 +565,13 @@ class SecurityHeadersManager {
    */
   _logSecurityEvent(event, data) {
     const logEntry = {
-      timestamp: new Date().toISOString(),
+      timestamp: generateTimestamp(),
       event,
-      data,
-      source: 'SECURITY_HEADERS_MANAGER',
+      data: sanitizeSensitiveData(data),
+      source: "SECURITY_HEADERS_MANAGER",
     };
 
-    console.warn('🛡️  Security Event:', logEntry);
+    console.warn("🛡️  Security Event:", logEntry);
 
     // In production, send to security monitoring service
     if (config.isProduction()) {
