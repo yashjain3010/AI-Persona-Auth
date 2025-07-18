@@ -1,24 +1,3 @@
-/**
- * Central Configuration Module
- *
- * This module serves as the single source of truth for all application configuration
- * in a multi-tenant SaaS environment. It provides enterprise-grade configuration
- * management with validation, type safety, and integration with the logging system.
- *
- * Key Features:
- * - Environment variable validation with detailed error reporting
- * - Type coercion and intelligent defaults
- * - Configuration grouping by functional domain
- * - Runtime validation with startup checks
- * - Integration with logger and error handling systems
- * - Security-focused configuration masking
- * - Development vs Production optimizations
- * - Configuration change detection and monitoring
- *
- * @author AI-Persona Backend
- * @version 1.0.0
- */
-
 require('dotenv').config();
 
 const { generateTimestamp } = require('../utils/common');

@@ -1,26 +1,9 @@
-/**
- * Email Configuration Module
- *
- * This module provides a comprehensive email management system for multi-tenant SaaS
- * applications with enterprise-grade reliability, monitoring, and integration with the
- * enhanced backend architecture. Supports multiple email providers with queue-based
- * processing, comprehensive error handling, and detailed analytics.
- *
- * Key Features:
- * - Multiple email providers (SMTP, SendGrid, SES, Mailgun)
- * - Template-based email system with workspace branding
- * - Email verification and invitation workflows
- * - Queue-based email processing with retry logic and exponential backoff
- * - Email analytics and delivery tracking
- * - Multi-tenant email customization
- * - Security features (SPF, DKIM, rate limiting)
- * - Integration with enhanced systems (logger, error handling, async utilities)
- * - Performance monitoring and health checks
- * - Graceful error handling and recovery
- *
- * @author AI-Persona Backend
- * @version 1.0.0
- */
+// NOTE: Ensure the following best practices are followed in this module:
+// 1. Provider abstraction: Support switching between SMTP, SendGrid, SES, etc. via config.
+// 2. Credentials: All sensitive credentials (SMTP user/pass, API keys) must be loaded from environment variables.
+// 3. Error handling: All email sending functions should throw or return structured errors (preferably using ApiError or a custom subclass).
+// 4. Rate limiting: Implement per-user/email rate limiting to prevent abuse.
+// 5. Mocking: Support a mock mode for development/testing to avoid sending real emails.
 
 const nodemailer = require("nodemailer");
 const fs = require("fs").promises;

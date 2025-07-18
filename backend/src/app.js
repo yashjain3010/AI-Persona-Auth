@@ -4,8 +4,6 @@ const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const passport = require('passport');
 const slowDown = require('express-slow-down');
-
-// Import configurations
 const config = require('./config');
 const { helmetMiddleware } = require('./security/helmet');
 const { corsMiddleware } = require('./security/cors');
@@ -21,7 +19,6 @@ const {
 } = require('./security/rateLimit');
 const swaggerUi = require('swagger-ui-express');
 const YAML = require('yamljs');
-// Import utilities
 const logger = require('./utils/logger');
 const { ApiError, errorHandler } = require('./utils/apiError');
 const {
@@ -32,13 +29,8 @@ const {
 const { asyncHandler } = require('./utils/asyncHandler');
 const { middleware: validationMiddleware } = require('./validations');
 const { generateTimestamp } = require('./utils/common');
-
-// Import database
 const { checkDatabaseHealth } = require('./config/database');
 
-/**
- * Create Express Application
- */
 const app = express();
 
 const swaggerDocument = YAML.load('./docs/swagger.yaml');
@@ -48,10 +40,6 @@ const swaggerDocument = YAML.load('./docs/swagger.yaml');
  * This is essential for proper IP detection behind load balancers
  */
 app.set('trust proxy', config.server.trustProxy);
-
-/**
- * Security Middleware
- */
 
 // Helmet - Security headers
 app.use(helmetMiddleware);
@@ -139,10 +127,6 @@ app.use(
     },
   }),
 );
-
-/**
- * Authentication Setup
- */
 
 // Initialize Passport
 app.use(passport.initialize());
@@ -362,17 +346,6 @@ app.get(
  * All application routes are mounted here
  */
 app.use(config.API_PREFIX, require('./routes'));
-
-/**
- * API Documentation
- * Swagger/OpenAPI documentation endpoint
- */
-// TODO: Implement when API documentation is ready
-// if (config.isDevelopment() || config.docs.enabled) {
-//   const swaggerUi = require('swagger-ui-express');
-//   const swaggerSpec = require('./docs/swagger');
-//   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-// }
 
 /**
  * 404 Handler

@@ -1,30 +1,9 @@
-/**
- * Server Initialization and Startup
- *
- * This file is responsible for starting the HTTP server, initializing database
- * connections, and managing the application lifecycle for the AI-Persona backend.
- *
- * Key Features:
- * - HTTP/HTTPS server initialization
- * - Database connection management
- * - Environment validation
- * - Graceful startup and shutdown
- * - Process monitoring and health checks
- * - Error handling and recovery
- * - Production-ready logging
- *
- * @author AI-Persona Backend
- * @version 1.0.0
- */
-
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const cluster = require('cluster');
 const os = require('os');
-
-// Import application and configurations
 const app = require('./app');
 const config = require('./config');
 const {

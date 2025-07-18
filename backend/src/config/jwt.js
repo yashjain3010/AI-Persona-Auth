@@ -1,27 +1,3 @@
-/**
- * JWT Token Management Module
- *
- * This module provides a comprehensive JWT token management system for
- * multi-tenant SaaS applications with enterprise security requirements.
- * Integrated with the enhanced configuration system, logger, error handling,
- * and async utilities for production-ready token management.
- *
- * Features:
- * - Secure token generation with workspace context
- * - Token validation with blacklist support
- * - Refresh token management with rotation
- * - Multi-tenant token scoping
- * - Token introspection and analytics
- * - Security event logging
- * - Integration with enhanced systems
- * - Performance monitoring and metrics
- * - Graceful error handling and recovery
- * - In-memory token blacklist management
- *
- * @author AI-Persona Backend
- * @version 1.0.0
- */
-
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const config = require("./index");
@@ -31,7 +7,6 @@ const {
   ApiError,
   SecurityError,
   AuthenticationError,
-  ErrorHandler,
 } = require("../utils/apiError");
 const { asyncHandler } = require("../utils/asyncHandler");
 
