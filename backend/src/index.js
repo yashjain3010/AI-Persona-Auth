@@ -17,23 +17,23 @@
  * @version 1.0.0
  */
 
-const http = require("http");
-const https = require("https");
-const fs = require("fs");
-const path = require("path");
-const cluster = require("cluster");
-const os = require("os");
+const http = require('http');
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
+const cluster = require('cluster');
+const os = require('os');
 
 // Import application and configurations
-const app = require("./app");
-const config = require("./config");
+const app = require('./app');
+const config = require('./config');
 const {
   connectDatabase,
   disconnectDatabase,
   checkDatabaseHealth,
-} = require("./config/database");
-const logger = require("./utils/logger");
-const { generateTimestamp } = require("./utils/common");
+} = require('./config/database');
+const logger = require('./utils/logger');
+const { generateTimestamp } = require('./utils/common');
 
 /**
  * Server Configuration
@@ -65,34 +65,37 @@ let healthCheckTimer = null;
  * Validates environment and configuration before starting the server
  */
 const validateEnvironment = () => {
-  logger.info("🔍 Validating environment and configuration...");
+  logger.info('🔍 Validating environment and configuration...');
 
   // Basic environment validation
-  const requiredEnvVars = ["NODE_ENV", "PORT"];
+  const requiredEnvVars = ['NODE_ENV', 'PORT'];
   const missingVars = requiredEnvVars.filter(
-    (varName) => !process.env[varName]
+    (varName) => !process.env[varName],
   );
 
   if (missingVars.length > 0) {
-    logger.warn("⚠️  Missing optional environment variables:", missingVars);
-    logger.info("ℹ️  Using default values for missing variables");
+    logger.warn('⚠️  Missing optional environment variables:', missingVars);
+    logger.info('ℹ️  Using default values for missing variables');
   }
 
   // Validate port
   const port = parseInt(SERVER_CONFIG.port, 10);
   if (isNaN(port) || port < 1 || port > 65535) {
-    logger.error("❌ Invalid port number:", SERVER_CONFIG.port);
+    logger.error('❌ Invalid port number:', SERVER_CONFIG.port);
     process.exit(1);
   }
 
   // Validate JWT secret length if provided
   if (config.security.jwtSecret && config.security.jwtSecret.length < 32) {
-    logger.warn(
-      "⚠️  JWT secret should be at least 32 characters long for security"
+    logger.error(
+      '❌ JWT secret must be at least 32 characters long in production',
     );
+    if (config.isProduction()) {
+      process.exit(1);
+    }
   }
 
-  logger.info("✅ Environment validation completed successfully");
+  logger.info('✅ Environment validation completed successfully');
 };
 
 /**
@@ -100,30 +103,30 @@ const validateEnvironment = () => {
  * Connects to the database and runs health checks
  */
 const initializeDatabase = async () => {
-  logger.info("🗄️  Initializing database connection...");
+  logger.info('🗄️  Initializing database connection...');
 
   try {
     // Connect to database
     await connectDatabase();
-    logger.info("✅ Database connection established");
+    logger.info('✅ Database connection established');
 
     // Run health check
     const healthResult = await checkDatabaseHealth();
-    if (healthResult.status === "healthy") {
-      logger.info("✅ Database health check passed");
+    if (healthResult.status === 'healthy') {
+      logger.info('✅ Database health check passed');
     } else {
-      logger.warn("⚠️  Database not available:", healthResult.error);
+      logger.warn('⚠️  Database not available:', healthResult.error);
       if (config.isProduction()) {
-        logger.error("❌ Database is required in production");
+        logger.error('❌ Database is required in production');
         process.exit(1);
       }
     }
   } catch (error) {
-    logger.error("❌ Database initialization failed:", error);
+    logger.error('❌ Database initialization failed:', error);
     if (config.isProduction()) {
       process.exit(1);
     } else {
-      logger.warn("⚠️  Continuing without database in development mode");
+      logger.warn('⚠️  Continuing without database in development mode');
     }
   }
 };
@@ -138,11 +141,11 @@ const getSSLConfig = () => {
   }
 
   try {
-    const keyPath = path.join(__dirname, "../ssl/private.key");
-    const certPath = path.join(__dirname, "../ssl/certificate.crt");
+    const keyPath = path.join(__dirname, '../ssl/private.key');
+    const certPath = path.join(__dirname, '../ssl/certificate.crt');
 
     if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
-      logger.warn("⚠️  SSL certificates not found, falling back to HTTP");
+      logger.warn('⚠️  SSL certificates not found, falling back to HTTP');
       return null;
     }
 
@@ -152,16 +155,16 @@ const getSSLConfig = () => {
     };
 
     // Optional: Add CA bundle if available
-    const caPath = path.join(__dirname, "../ssl/ca-bundle.crt");
+    const caPath = path.join(__dirname, '../ssl/ca-bundle.crt');
     if (fs.existsSync(caPath)) {
       sslConfig.ca = fs.readFileSync(caPath);
     }
 
-    logger.info("✅ SSL certificates loaded successfully");
+    logger.info('✅ SSL certificates loaded successfully');
     return sslConfig;
   } catch (error) {
-    logger.error("❌ Failed to load SSL certificates:", error);
-    logger.warn("⚠️  Falling back to HTTP server");
+    logger.error('❌ Failed to load SSL certificates:', error);
+    logger.warn('⚠️  Falling back to HTTP server');
     return null;
   }
 };
@@ -172,10 +175,10 @@ const getSSLConfig = () => {
  */
 const createServer = (sslConfig = null) => {
   if (sslConfig) {
-    logger.info("🔒 Creating HTTPS server...");
+    logger.info('🔒 Creating HTTPS server...');
     return https.createServer(sslConfig, app);
   } else {
-    logger.info("🌐 Creating HTTP server...");
+    logger.info('🌐 Creating HTTP server...');
     return http.createServer(app);
   }
 };
@@ -200,57 +203,57 @@ const startServer = async () => {
     server.headersTimeout = 66000; // Slightly higher than keepAliveTimeout
 
     // Server event handlers
-    server.on("error", (error) => {
-      if (error.code === "EADDRINUSE") {
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
         logger.error(`❌ Port ${SERVER_CONFIG.port} is already in use`);
         process.exit(1);
-      } else if (error.code === "EACCES") {
+      } else if (error.code === 'EACCES') {
         logger.error(
-          `❌ Permission denied to bind to port ${SERVER_CONFIG.port}`
+          `❌ Permission denied to bind to port ${SERVER_CONFIG.port}`,
         );
         process.exit(1);
       } else {
-        logger.error("❌ Server error:", error);
+        logger.error('❌ Server error:', error);
         process.exit(1);
       }
     });
 
-    server.on("listening", () => {
+    server.on('listening', () => {
       const address = server.address();
-      const protocol = sslConfig ? "https" : "http";
+      const protocol = sslConfig ? 'https' : 'http';
 
       logger.info(`🚀 Server started successfully!`);
       logger.info(
-        `📍 Server running on ${protocol}://${SERVER_CONFIG.host}:${address.port}`
+        `📍 Server running on ${protocol}://${SERVER_CONFIG.host}:${address.port}`,
       );
       logger.info(`🌍 Environment: ${SERVER_CONFIG.environment}`);
       logger.info(`🔧 Process ID: ${process.pid}`);
       logger.info(
         `💾 Memory Usage: ${Math.round(
-          process.memoryUsage().heapUsed / 1024 / 1024
-        )}MB`
+          process.memoryUsage().heapUsed / 1024 / 1024,
+        )}MB`,
       );
 
       if (config.isDevelopment()) {
         logger.info(
-          `🏥 Health Check: ${protocol}://${SERVER_CONFIG.host}:${address.port}/health`
+          `🏥 Health Check: ${protocol}://${SERVER_CONFIG.host}:${address.port}/health`,
         );
         logger.info(
-          `📊 Detailed Health: ${protocol}://${SERVER_CONFIG.host}:${address.port}/health/detailed`
+          `📊 Detailed Health: ${protocol}://${SERVER_CONFIG.host}:${address.port}/health/detailed`,
         );
         logger.info(
-          `🔗 API Endpoint: ${protocol}://${SERVER_CONFIG.host}:${address.port}/api/v1`
+          `🔗 API Endpoint: ${protocol}://${SERVER_CONFIG.host}:${address.port}/api/v1`,
         );
       }
     });
 
-    server.on("connection", (socket) => {
+    server.on('connection', (socket) => {
       // Set socket timeout
       socket.setTimeout(config.server.socketTimeout);
 
       // Handle socket errors
-      socket.on("error", (error) => {
-        logger.debug("Socket error:", error);
+      socket.on('error', (error) => {
+        logger.debug('Socket error:', error);
       });
     });
 
@@ -260,7 +263,7 @@ const startServer = async () => {
     // Start health monitoring
     startHealthMonitoring();
   } catch (error) {
-    logger.error("❌ Failed to start server:", error);
+    logger.error('❌ Failed to start server:', error);
     process.exit(1);
   }
 };
@@ -282,32 +285,32 @@ const startHealthMonitoring = () => {
       // Check memory usage
       if (memoryUsageMB > SERVER_CONFIG.maxMemoryUsage) {
         logger.warn(
-          `⚠️  High memory usage: ${memoryUsageMB}MB (limit: ${SERVER_CONFIG.maxMemoryUsage}MB)`
+          `⚠️  High memory usage: ${memoryUsageMB}MB (limit: ${SERVER_CONFIG.maxMemoryUsage}MB)`,
         );
 
         // Force garbage collection if available
         if (global.gc) {
           global.gc();
-          logger.info("🗑️  Garbage collection triggered");
+          logger.info('🗑️  Garbage collection triggered');
         }
       }
 
       // Check database health
       const dbHealth = await checkDatabaseHealth();
-      if (dbHealth.status === "unhealthy") {
-        logger.warn("⚠️  Database health check failed:", dbHealth.error);
+      if (dbHealth.status === 'unhealthy') {
+        logger.warn('⚠️  Database health check failed:', dbHealth.error);
       }
 
       // Log health metrics in development
       if (config.isDevelopment()) {
-        logger.debug("Health metrics:", {
+        logger.debug('Health metrics:', {
           memory: `${memoryUsageMB}MB`,
           uptime: `${Math.round(process.uptime())}s`,
           database: dbHealth.status,
         });
       }
     } catch (error) {
-      logger.error("Health monitoring error:", error);
+      logger.error('Health monitoring error:', error);
     }
   }, SERVER_CONFIG.healthCheckInterval);
 };
@@ -318,7 +321,7 @@ const startHealthMonitoring = () => {
  */
 const gracefulShutdown = async (signal) => {
   if (isShuttingDown) {
-    logger.warn("⚠️  Shutdown already in progress, forcing exit...");
+    logger.warn('⚠️  Shutdown already in progress, forcing exit...');
     process.exit(1);
   }
 
@@ -332,7 +335,7 @@ const gracefulShutdown = async (signal) => {
 
   // Set shutdown timeout
   const shutdownTimeout = setTimeout(() => {
-    logger.error("❌ Shutdown timeout exceeded, forcing exit");
+    logger.error('❌ Shutdown timeout exceeded, forcing exit');
     process.exit(1);
   }, SERVER_CONFIG.shutdownTimeout);
 
@@ -340,32 +343,32 @@ const gracefulShutdown = async (signal) => {
     // Stop accepting new connections
     if (server) {
       server.close(async () => {
-        logger.info("✅ HTTP server closed");
+        logger.info('✅ HTTP server closed');
 
         try {
           // Close database connections
           await disconnectDatabase();
-          logger.info("✅ Database connections closed");
+          logger.info('✅ Database connections closed');
 
           // Clear shutdown timeout
           clearTimeout(shutdownTimeout);
 
-          logger.info("✅ Graceful shutdown completed");
+          logger.info('✅ Graceful shutdown completed');
           process.exit(0);
         } catch (error) {
-          logger.error("❌ Error during database shutdown:", error);
+          logger.error('❌ Error during database shutdown:', error);
           process.exit(1);
         }
       });
     } else {
       // No server to close, just close database
       await disconnectDatabase();
-      logger.info("✅ Database connections closed");
+      logger.info('✅ Database connections closed');
       clearTimeout(shutdownTimeout);
       process.exit(0);
     }
   } catch (error) {
-    logger.error("❌ Error during graceful shutdown:", error);
+    logger.error('❌ Error during graceful shutdown:', error);
     clearTimeout(shutdownTimeout);
     process.exit(1);
   }
@@ -387,20 +390,20 @@ const runCluster = () => {
   }
 
   // Handle worker events
-  cluster.on("exit", (worker, code, signal) => {
+  cluster.on('exit', (worker, code, signal) => {
     logger.warn(
-      `Worker ${worker.process.pid} died with code ${code} and signal ${signal}`
+      `Worker ${worker.process.pid} died with code ${code} and signal ${signal}`,
     );
 
     if (!isShuttingDown) {
-      logger.info("Starting a new worker");
+      logger.info('Starting a new worker');
       cluster.fork();
     }
   });
 
-  cluster.on("listening", (worker, address) => {
+  cluster.on('listening', (worker, address) => {
     logger.info(
-      `Worker ${worker.process.pid} listening on ${address.address}:${address.port}`
+      `Worker ${worker.process.pid} listening on ${address.address}:${address.port}`,
     );
   });
 
@@ -414,13 +417,14 @@ const runCluster = () => {
     }
 
     setTimeout(() => {
-      logger.info("Cluster shutdown completed");
+      logger.info('Cluster shutdown completed');
       process.exit(0);
     }, 5000);
   };
 
-  process.on("SIGTERM", () => shutdownCluster("SIGTERM"));
-  process.on("SIGINT", () => shutdownCluster("SIGINT"));
+  process.on('SIGTERM', () => shutdownCluster('SIGTERM'));
+  process.on('SIGINT', () => shutdownCluster('SIGINT'));
+  process.on('SIGQUIT', () => shutdownCluster('SIGQUIT')); // Added SIGQUIT
 };
 
 /**
@@ -428,7 +432,7 @@ const runCluster = () => {
  * Runs the server in single process mode
  */
 const runSingle = async () => {
-  logger.info("🚀 Starting server in single process mode");
+  logger.info('🚀 Starting server in single process mode');
 
   // Validate environment
   validateEnvironment();
@@ -440,28 +444,28 @@ const runSingle = async () => {
   await startServer();
 
   // Setup shutdown handlers
-  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-  process.on("SIGQUIT", () => gracefulShutdown("SIGQUIT"));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGQUIT', () => gracefulShutdown('SIGQUIT'));
 
   // Handle uncaught exceptions
-  process.on("uncaughtException", (error) => {
-    logger.error("💥 Uncaught Exception:", {
+  process.on('uncaughtException', (error) => {
+    logger.error('💥 Uncaught Exception:', {
       error: error.message,
       stack: error.stack,
       timestamp: generateTimestamp(),
     });
-    gracefulShutdown("UNCAUGHT_EXCEPTION");
+    gracefulShutdown('UNCAUGHT_EXCEPTION');
   });
 
   // Handle unhandled promise rejections
-  process.on("unhandledRejection", (reason, promise) => {
-    logger.error("💥 Unhandled Rejection:", {
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('💥 Unhandled Rejection:', {
       reason: reason.toString(),
       promise: promise.toString(),
       timestamp: generateTimestamp(),
     });
-    gracefulShutdown("UNHANDLED_REJECTION");
+    gracefulShutdown('UNHANDLED_REJECTION');
   });
 };
 
@@ -472,20 +476,23 @@ const runSingle = async () => {
 const main = async () => {
   try {
     // Display startup banner
-    logger.info("");
+    logger.info('');
     logger.info(
-      "╔══════════════════════════════════════════════════════════════╗"
+      '╔══════════════════════════════════════════════════════════════╗',
     );
     logger.info(
-      "║                    AI-Persona Backend                       ║"
+      '║                    AI-Persona Backend                       ║',
     );
     logger.info(
-      "║                   Enhanced Server v1.0.0                    ║"
+      '║                   Enhanced Server v1.0.0                    ║',
     );
     logger.info(
-      "╚══════════════════════════════════════════════════════════════╝"
+      '╚══════════════════════════════════════════════════════════════╝',
     );
-    logger.info("");
+    logger.info('');
+
+    // Log masked configuration at startup
+    logger.info('🔑 Effective configuration (masked):', config.getSafeConfig());
 
     // Check if cluster mode is enabled and if we're the master process
     if (
@@ -498,7 +505,7 @@ const main = async () => {
       await runSingle();
     }
   } catch (error) {
-    logger.error("❌ Failed to start application:", error);
+    logger.error('❌ Failed to start application:', error);
     process.exit(1);
   }
 };

@@ -31,6 +31,7 @@ const {
 } = require('./utils/apiResponse');
 const { asyncHandler } = require('./utils/asyncHandler');
 const { middleware: validationMiddleware } = require('./validations');
+const { generateTimestamp } = require('./utils/common');
 
 // Import database
 const { checkDatabaseHealth } = require('./config/database');

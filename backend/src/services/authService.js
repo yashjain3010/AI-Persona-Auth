@@ -85,409 +85,90 @@ class AuthenticationService {
   }
 
   /**
-   * Register a new user with automatic workspace assignment
-   * @param {Object} userData - User registration data
-   * @param {Object} options - Registration options
-   * @returns {Promise<Object>} Registration result
+   * Register a new user (local)
+   * @param {Object} userData - { email, password, name }
+   * @returns {Promise<Object>} Registration result (user, workspace, tokens)
    */
-  async registerUser(userData, options = {}) {
-    return asyncHandler(async () => {
-      const { email, password, name, inviteToken = null } = userData;
-      const {
-        skipEmailVerification = false,
-        deviceId = null,
-        ipAddress = null,
-      } = options;
-
-      // Validate input data
-      const emailValidation = inputValidator.validateEmail(email);
-      if (!emailValidation.isValid) {
-        throw new ApiError(
-          ERROR_CODES.VALIDATION_ERROR,
-          'Invalid email format',
-          HTTP_STATUS.BAD_REQUEST,
-          { field: 'email', details: emailValidation.errors },
-        );
-      }
-
-      const passwordValidation = inputValidator.validatePassword(password);
-      if (!passwordValidation.isValid) {
-        throw new ApiError(
-          ERROR_CODES.VALIDATION_ERROR,
-          'Password does not meet requirements',
-          HTTP_STATUS.BAD_REQUEST,
-          { field: 'password', details: passwordValidation.errors },
-        );
-      }
-
-      // Business validation
-      const businessValidation = businessValidator.validateUserRegistration({
+  async registerUser({ email, password, name }) {
+    // Validate input (add your validation logic here)
+    // Hash password
+    const passwordHash = await hashPassword(password);
+    // Create user
+    const user = await prisma.user.create({
+      data: {
         email,
-        password,
         name,
-        inviteToken,
-      });
-      if (!businessValidation.isValid) {
-        throw new ApiError(
-          ERROR_CODES.BUSINESS_RULE_VIOLATION,
-          'Registration violates business rules',
-          HTTP_STATUS.BAD_REQUEST,
-          { details: businessValidation.errors },
-        );
-      }
-
-      // Security validation
-      const securityValidation = securityValidator.validateRegistrationSecurity(
-        {
-          email,
-          password,
-          ipAddress,
-          deviceId,
-        },
-      );
-      if (!securityValidation.isValid) {
-        throw new ApiError(
-          ERROR_CODES.SECURITY_VIOLATION,
-          'Registration blocked for security reasons',
-          HTTP_STATUS.FORBIDDEN,
-          { details: securityValidation.errors },
-        );
-      }
-
-      const normalizedEmail = normalizeEmail(email);
-      const domain = extractDomain(normalizedEmail);
-
-      // Check if user exists
-      const existingUser = await prisma.user.findUnique({
-        where: { email: normalizedEmail },
-      });
-      if (existingUser) {
-        throw new ApiError(
-          ERROR_CODES.RESOURCE_ALREADY_EXISTS,
-          'User already exists',
-          HTTP_STATUS.CONFLICT,
-          { field: 'email' },
-        );
-      }
-
-      // Personal email policy
-      if (isPersonalEmail(normalizedEmail) && !inviteToken) {
-        throw new ApiError(
-          ERROR_CODES.BUSINESS_RULE_VIOLATION,
-          'Personal email domains are not allowed',
-          HTTP_STATUS.FORBIDDEN,
-          { field: 'email', domain },
-        );
-      }
-
-      // Hash password
-      const passwordHash = await hashPassword(password);
-
-      // Transaction: workspace, user, membership
-      const result = await prisma.$transaction(async (tx) => {
-        let workspace,
-          isFirstUser = false;
-
-        if (inviteToken) {
-          // Handle invitation-based registration
-          const invite = await tx.invite.findUnique({
-            where: { token: inviteToken },
-            include: { workspace: true },
-          });
-
-          if (!invite || invite.used || invite.expiresAt < new Date()) {
-            throw new ApiError(
-              ERROR_CODES.RESOURCE_NOT_FOUND,
-              'Invalid or expired invitation',
-              HTTP_STATUS.BAD_REQUEST,
-              { field: 'inviteToken' },
-            );
-          }
-
-          if (invite.email !== normalizedEmail) {
-            throw new ApiError(
-              ERROR_CODES.VALIDATION_ERROR,
-              'Email does not match invitation',
-              HTTP_STATUS.BAD_REQUEST,
-              { field: 'email' },
-            );
-          }
-
-          workspace = invite.workspace;
-
-          // Mark invite as used
-          await tx.invite.update({
-            where: { id: invite.id },
-            data: { used: true },
-          });
-        } else {
-          // Handle domain-based workspace assignment
-          workspace = await getOrCreateWorkspace(tx, domain);
-          isFirstUser =
-            (await tx.membership.count({
-              where: { workspaceId: workspace.id },
-            })) === 0;
-        }
-
-        const user = await tx.user.create({
-          data: { email: normalizedEmail, name, passwordHash },
-        });
-
-        const role = assignMembershipRole(isFirstUser);
-        const membership = await tx.membership.create({
-          data: { userId: user.id, workspaceId: workspace.id, role },
-        });
-
-        return { user, workspace, membership, role, isFirstUser };
-      });
-
-      // Generate tokens
-      const tokens = generateTokenPair({
-        userId: result.user.id,
-        email: result.user.email,
-        workspaceId: result.workspace.id,
-        role: result.role,
-        deviceId,
-        ipAddress,
-      });
-
-      // Store refresh token session
-      await prisma.session.create({
-        data: {
-          userId: result.user.id,
-          refreshToken: tokens.refreshToken,
-          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
-        },
-      });
-
-      // Send emails
-      if (!skipEmailVerification) {
-        await sendUserEmail('verification', {
-          user: result.user,
-          workspace: result.workspace,
-        });
-      } else {
-        await sendUserEmail('welcome', {
-          user: result.user,
-          workspace: result.workspace,
-        });
-      }
-
-      // Update metrics
-      this.authMetrics.registrations++;
-
-      // Log registration event
-      this._logAuthEvent(AUTH_EVENTS.USER_REGISTERED, {
-        userId: result.user.id,
-        email: result.user.email,
-        workspaceId: result.workspace.id,
-        role: result.role,
-        ipAddress,
-        deviceId,
-      });
-
-      return ApiResponse.success(
-        'User registered successfully',
-        {
-          user: {
-            id: result.user.id,
-            email: result.user.email,
-            name: result.user.name,
-            emailVerified: result.user.emailVerified,
-          },
-          workspace: {
-            id: result.workspace.id,
-            name: result.workspace.name,
-            domain: result.workspace.domain,
-          },
-          role: result.role,
-          tokens: skipEmailVerification ? tokens : null,
-          requiresEmailVerification: !skipEmailVerification,
-        },
-        HTTP_STATUS.CREATED,
-      );
-    })();
+        passwordHash,
+      },
+    });
+    // Create workspace (example logic, adjust as needed)
+    const workspace = await prisma.workspace.create({
+      data: {
+        name: `${name}'s Workspace`,
+        domain: email.split('@')[1],
+      },
+    });
+    // Create membership
+    await prisma.membership.create({
+      data: {
+        userId: user.id,
+        workspaceId: workspace.id,
+        role: 'ADMIN',
+      },
+    });
+    // Generate tokens (implement as needed)
+    const tokens = await this.generateAuthTokens({
+      ...user,
+      memberships: [{ workspace, role: 'ADMIN' }],
+    });
+    // Return result
+    return { user, workspace, tokens };
   }
 
   /**
-   * Authenticate user login
-   * @param {Object} credentials - Login credentials
-   * @param {Object} options - Login options
-   * @returns {Promise<Object>} Authentication result
+   * Authenticate user (local login)
+   * @param {Object} credentials - { email, password }
+   * @returns {Promise<Object>} Login result (user, workspace, tokens)
    */
-  async authenticateUser(credentials, options = {}) {
-    return asyncHandler(async () => {
-      const { email, password } = credentials;
-      const { deviceId = null, ipAddress = null } = options;
-
-      // Validate input
-      const emailValidation = inputValidator.validateEmail(email);
-      if (!emailValidation.isValid) {
-        throw new ApiError(
-          ERROR_CODES.VALIDATION_ERROR,
-          'Invalid email format',
-          HTTP_STATUS.BAD_REQUEST,
-          { field: 'email' },
-        );
-      }
-
-      const passwordValidation = inputValidator.validatePassword(password);
-      if (!passwordValidation.isValid) {
-        throw new ApiError(
-          ERROR_CODES.VALIDATION_ERROR,
-          'Invalid password format',
-          HTTP_STATUS.BAD_REQUEST,
-          { field: 'password' },
-        );
-      }
-
-      // Security validation
-      const securityValidation = securityValidator.validateSecurity({
-        email,
-        password,
-        ipAddress,
-        deviceId,
-      });
-      if (!securityValidation.isValid) {
-        this.authMetrics.failedAttempts++;
-        throw new ApiError(
-          ERROR_CODES.SECURITY_VIOLATION,
-          'Login blocked for security reasons',
-          HTTP_STATUS.FORBIDDEN,
-          { details: securityValidation.errors },
-        );
-      }
-
-      const normalizedEmail = normalizeEmail(email);
-
-      // Find user with workspace memberships
-      const user = await prisma.user.findUnique({
-        where: { email: normalizedEmail },
-        include: {
-          memberships: {
-            where: { isActive: true },
-            include: {
-              workspace: {
-                select: {
-                  id: true,
-                  name: true,
-                  domain: true,
-                  isActive: true,
-                },
-              },
-            },
-          },
-        },
-      });
-
-      if (!user) {
-        this.authMetrics.failedAttempts++;
-        throw new ApiError(
-          ERROR_CODES.AUTHENTICATION_FAILED,
-          'Invalid email or password',
-          HTTP_STATUS.UNAUTHORIZED,
-        );
-      }
-
-      // Check if user has password (OAuth-only users don't have passwords)
-      if (!user.passwordHash) {
-        this.authMetrics.failedAttempts++;
-        throw new ApiError(
-          ERROR_CODES.AUTHENTICATION_FAILED,
-          'Please sign in with your OAuth provider',
-          HTTP_STATUS.UNAUTHORIZED,
-        );
-      }
-
-      // Verify password
-      const isValidPassword = await comparePassword(
-        password,
-        user.passwordHash,
+  async authenticateUser({ email, password }) {
+    // Find user
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user)
+      throw new ApiError(
+        401,
+        'Invalid credentials',
+        ERROR_CODES.INVALID_CREDENTIALS,
       );
-      if (!isValidPassword) {
-        this.authMetrics.failedAttempts++;
-        throw new ApiError(
-          ERROR_CODES.AUTHENTICATION_FAILED,
-          'Invalid email or password',
-          HTTP_STATUS.UNAUTHORIZED,
-        );
-      }
-
-      // Check if email is verified
-      if (!user.emailVerified) {
-        throw new ApiError(
-          ERROR_CODES.EMAIL_NOT_VERIFIED,
-          'Please verify your email before signing in',
-          HTTP_STATUS.FORBIDDEN,
-          { userId: user.id, email: user.email },
-        );
-      }
-
-      // Check if user is active
-      if (!user.isActive) {
-        throw new ApiError(
-          ERROR_CODES.ACCOUNT_INACTIVE,
-          'Your account has been deactivated',
-          HTTP_STATUS.FORBIDDEN,
-        );
-      }
-
-      // Check workspace membership
-      const activeMembership = user.memberships.find(
-        (m) => m.workspace.isActive,
+    // Check password
+    const valid = await comparePassword(password, user.passwordHash);
+    if (!valid)
+      throw new ApiError(
+        401,
+        'Invalid credentials',
+        ERROR_CODES.INVALID_CREDENTIALS,
       );
-      if (!activeMembership) {
-        throw new ApiError(
-          ERROR_CODES.ACCESS_DENIED,
-          'No active workspace access found',
-          HTTP_STATUS.FORBIDDEN,
-        );
-      }
-
-      // Generate tokens
-      const tokens = generateTokenPair({
-        userId: user.id,
-        email: user.email,
-        workspaceId: activeMembership.workspace.id,
-        role: activeMembership.role,
-        deviceId,
-        ipAddress,
-      });
-
-      // Store refresh token session
-      await prisma.session.create({
-        data: {
-          userId: user.id,
-          refreshToken: tokens.refreshToken,
-          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
-        },
-      });
-
-      // Update metrics
-      this.authMetrics.logins++;
-
-      // Log login event
-      this._logAuthEvent(AUTH_EVENTS.USER_LOGIN, {
-        userId: user.id,
-        email: user.email,
-        workspaceId: activeMembership.workspace.id,
-        role: activeMembership.role,
-        ipAddress,
-        deviceId,
-      });
-
-      return ApiResponse.success('Login successful', {
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          emailVerified: user.emailVerified,
-        },
-        workspace: activeMembership.workspace,
-        role: activeMembership.role,
-        tokens,
-      });
-    })();
+    // Get membership and workspace
+    const membership = await prisma.membership.findFirst({
+      where: { userId: user.id },
+      include: { workspace: true },
+    });
+    if (!membership)
+      throw new ApiError(
+        403,
+        'No workspace access',
+        ERROR_CODES.NO_WORKSPACE_ACCESS,
+      );
+    // Generate tokens
+    const tokens = await this.generateAuthTokens({
+      ...user,
+      memberships: [{ workspace: membership.workspace, role: membership.role }],
+    });
+    // Return result
+    return {
+      user,
+      workspace: membership.workspace,
+      tokens,
+    };
   }
 
   /**
@@ -944,10 +625,8 @@ module.exports = {
   authService,
 
   // Service methods
-  registerUser: (userData, options) =>
-    authService.registerUser(userData, options),
-  authenticateUser: (credentials, options) =>
-    authService.authenticateUser(credentials, options),
+  registerUser: (userData) => authService.registerUser(userData),
+  authenticateUser: (credentials) => authService.authenticateUser(credentials),
   refreshAccessToken: (refreshToken, options) =>
     authService.refreshAccessToken(refreshToken, options),
   logoutUser: (refreshToken, options) =>
