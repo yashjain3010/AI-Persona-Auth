@@ -1382,34 +1382,13 @@ process.on('SIGINT', async () => {
 
 // Export authentication manager and utilities
 module.exports = {
-  // Passport instance
   passport,
-
-  // Authentication manager
-  authManager,
-
-  // Constants
-  STRATEGIES,
-  AUTH_EVENTS,
-  AUTH_RESULT_CODES,
-  USER_ROLES,
-
-  // Metrics and health
-  getMetrics: () => authManager.getMetrics(),
-  getHealthStatus: () => authManager.getHealthStatus(),
-  resetMetrics: () => authManager.resetMetrics(),
-
-  // Middleware functions
   authenticate: (strategy, options = {}) => {
     return passport.authenticate(strategy, {
       session: false, // We use JWT, not sessions
       ...options,
     });
   },
-
-  // Initialize passport (call this in app.js)
   initialize: () => passport.initialize(),
-
-  // Management
-  gracefulShutdown: () => authManager.gracefulShutdown(),
+  AUTH_EVENTS,
 };

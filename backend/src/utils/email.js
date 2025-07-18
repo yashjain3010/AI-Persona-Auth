@@ -5,6 +5,7 @@ const {
   sendInvitationEmail,
   sendSecurityAlertEmail,
 } = require('../config/email');
+const { ApiError } = require('./apiError');
 
 async function sendUserEmail(type, params) {
   switch (type) {
@@ -19,7 +20,11 @@ async function sendUserEmail(type, params) {
     case 'securityAlert':
       return await sendSecurityAlertEmail(params);
     default:
-      throw new Error('Unknown email type');
+      throw new ApiError(
+        400,
+        `Unknown email type: ${type}`,
+        'EMAIL_TYPE_INVALID',
+      );
   }
 }
 

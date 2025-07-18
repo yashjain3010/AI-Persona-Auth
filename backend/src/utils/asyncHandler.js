@@ -1,30 +1,7 @@
-/**
- * Async Handler Utility
- *
- * This module provides comprehensive async function wrapping for Express routes
- * and middleware in a multi-tenant SaaS application with enterprise-grade error
- * handling, performance tracking, and request correlation.
- *
- * Key Features:
- * - Automatic async error handling and propagation
- * - Performance metrics and timing
- * - Request correlation and tracing
- * - Multi-tenant context support
- * - Memory leak prevention
- * - Graceful error recovery
- * - Integration with logging system
- * - Development vs Production optimizations
- * - Middleware and route handler support
- * - Timeout handling for long-running operations
- *
- * @author AI-Persona Backend
- * @version 1.0.0
- */
-
-const config = require("../config");
-const logger = require("./logger");
-const { ApiError, ErrorHandler } = require("./apiError");
-const { generateTimestamp } = require("./common");
+const config = require('../config');
+const logger = require('./logger');
+const { ApiError } = require('./apiError');
+const { generateTimestamp } = require('./common');
 
 /**
  * Performance Metrics Collector
@@ -64,11 +41,11 @@ class PerformanceMetrics {
     // Update timing metrics
     this.metrics.slowestExecution = Math.max(
       this.metrics.slowestExecution,
-      duration
+      duration,
     );
     this.metrics.fastestExecution = Math.min(
       this.metrics.fastestExecution,
-      duration
+      duration,
     );
 
     // Calculate average
@@ -160,7 +137,7 @@ class AsyncHandler {
       if (handlerOptions.enableTimeouts) {
         timeoutId = setTimeout(() => {
           performanceMetrics.recordTimeout();
-          logger.warn("Async handler timeout", {
+          logger.warn('Async handler timeout', {
             requestId: req.requestId,
             method: req.method,
             url: req.originalUrl,
@@ -171,10 +148,10 @@ class AsyncHandler {
 
           const timeoutError = new ApiError(
             408,
-            "Request timeout",
-            "REQUEST_TIMEOUT",
+            'Request timeout',
+            'REQUEST_TIMEOUT',
             { timeout: handlerOptions.defaultTimeout },
-            "medium"
+            'medium',
           );
 
           next(timeoutError);
@@ -188,7 +165,7 @@ class AsyncHandler {
           if (handlerOptions.enableCorrelation && req) {
             req.executionContext = {
               startTime,
-              handlerId: require("crypto").randomUUID(),
+              handlerId: require('crypto').randomUUID(),
               timeout: handlerOptions.defaultTimeout,
             };
           }
@@ -241,12 +218,12 @@ class AsyncHandler {
       // Execute with Promise handling
       executeAsync().catch((error) => {
         // This catch block handles any errors in the executeAsync function itself
-        logger.error("Critical async handler error", {
+        logger.error('Critical async handler error', {
           error: error.message,
           stack: error.stack,
-          requestId: req?.requestId || "unknown",
-          method: req?.method || "unknown",
-          url: req?.originalUrl || "unknown",
+          requestId: req?.requestId || 'unknown',
+          method: req?.method || 'unknown',
+          url: req?.originalUrl || 'unknown',
         });
 
         // Clear timeout
@@ -257,14 +234,14 @@ class AsyncHandler {
         // Create critical error
         const criticalError = new ApiError(
           500,
-          "Internal server error",
-          "CRITICAL_ASYNC_ERROR",
+          'Internal server error',
+          'CRITICAL_ASYNC_ERROR',
           config.isDevelopment() ? { originalError: error.message } : null,
-          "critical"
+          'critical',
         );
 
         // Only call next if it exists
-        if (next && typeof next === "function") {
+        if (next && typeof next === 'function') {
           next(criticalError);
         }
       });
@@ -280,26 +257,26 @@ class AsyncHandler {
       : 0;
 
     const logData = {
-      requestId: req?.requestId || "unknown",
-      method: req?.method || "unknown",
-      url: req?.originalUrl || "unknown",
+      requestId: req?.requestId || 'unknown',
+      method: req?.method || 'unknown',
+      url: req?.originalUrl || 'unknown',
       executionTime,
-      memoryUsed: memoryUsed > 0 ? `${Math.round(memoryUsed / 1024)}KB` : "N/A",
-      userId: req?.user?.id || "unknown",
-      workspaceId: req?.workspace?.id || "unknown",
+      memoryUsed: memoryUsed > 0 ? `${Math.round(memoryUsed / 1024)}KB` : 'N/A',
+      userId: req?.user?.id || 'unknown',
+      workspaceId: req?.workspace?.id || 'unknown',
     };
 
     // Log slow requests
     if (executionTime > 1000) {
-      logger.warn("Slow async handler execution", logData);
+      logger.warn('Slow async handler execution', logData);
     } else if (config.isDevelopment()) {
-      logger.debug("Async handler performance", logData);
+      logger.debug('Async handler performance', logData);
     }
 
     // Log high memory usage
     if (memoryUsed > 10 * 1024 * 1024) {
       // 10MB threshold
-      logger.warn("High memory usage in async handler", logData);
+      logger.warn('High memory usage in async handler', logData);
     }
   }
 
@@ -312,7 +289,7 @@ class AsyncHandler {
 
     if (memoryUsed > memoryThreshold) {
       performanceMetrics.recordMemoryLeak();
-      logger.warn("Potential memory leak detected", {
+      logger.warn('Potential memory leak detected', {
         requestId: req.requestId,
         method: req.method,
         url: req.originalUrl,
@@ -329,29 +306,29 @@ class AsyncHandler {
    */
   logError(error, req, executionTime) {
     const errorContext = {
-      requestId: req?.requestId || "unknown",
-      method: req?.method || "unknown",
-      url: req?.originalUrl || "unknown",
+      requestId: req?.requestId || 'unknown',
+      method: req?.method || 'unknown',
+      url: req?.originalUrl || 'unknown',
       executionTime,
-      userId: req?.user?.id || "unknown",
-      workspaceId: req?.workspace?.id || "unknown",
-      ip: req?.ip || "unknown",
-      userAgent: req?.get ? req.get("User-Agent") : "unknown",
-      body: config.isDevelopment() ? req?.body : "[REDACTED]",
+      userId: req?.user?.id || 'unknown',
+      workspaceId: req?.workspace?.id || 'unknown',
+      ip: req?.ip || 'unknown',
+      userAgent: req?.get ? req.get('User-Agent') : 'unknown',
+      body: config.isDevelopment() ? req?.body : '[REDACTED]',
       query: req?.query,
       params: req?.params,
-      headers: config.isDevelopment() ? req?.headers : "[REDACTED]",
+      headers: config.isDevelopment() ? req?.headers : '[REDACTED]',
       timestamp: generateTimestamp(),
     };
 
     // Log based on error type
     if (error instanceof ApiError) {
-      logger.error("API Error in async handler", {
+      logger.error('API Error in async handler', {
         ...errorContext,
         error: error.toJSON(),
       });
     } else {
-      logger.error("Unhandled error in async handler", {
+      logger.error('Unhandled error in async handler', {
         ...errorContext,
         error: {
           name: error.name,
@@ -391,141 +368,9 @@ const asyncHandler = (asyncFn, options = {}) => {
 };
 
 /**
- * Create custom async handler with specific options
+ * Only export asyncHandler and default
  */
-const createAsyncHandler = (options = {}) => {
-  return new AsyncHandler(options);
-};
-
-/**
- * Middleware-specific async handler
- * Optimized for middleware functions
- */
-const middlewareHandler = (asyncFn, options = {}) => {
-  const middlewareOptions = {
-    enableTimeouts: false, // Middleware shouldn't timeout
-    enablePerformanceLogging: false, // Reduce noise
-    ...options,
-  };
-
-  return defaultAsyncHandler.wrap(asyncFn, middlewareOptions);
-};
-
-/**
- * Route-specific async handler
- * Optimized for route handlers
- */
-const routeHandler = (asyncFn, options = {}) => {
-  const routeOptions = {
-    enableTimeouts: true,
-    enablePerformanceLogging: true,
-    defaultTimeout: 30000, // 30 seconds for routes
-    ...options,
-  };
-
-  return defaultAsyncHandler.wrap(asyncFn, routeOptions);
-};
-
-/**
- * Long-running operation handler
- * For operations that might take longer
- */
-const longRunningHandler = (asyncFn, options = {}) => {
-  const longRunningOptions = {
-    enableTimeouts: true,
-    defaultTimeout: 300000, // 5 minutes
-    enablePerformanceLogging: true,
-    ...options,
-  };
-
-  return defaultAsyncHandler.wrap(asyncFn, longRunningOptions);
-};
-
-/**
- * Health check handler
- * Optimized for health check endpoints
- */
-const healthCheckHandler = (asyncFn, options = {}) => {
-  const healthOptions = {
-    enableTimeouts: true,
-    defaultTimeout: 5000, // 5 seconds
-    enablePerformanceLogging: false,
-    enableMetrics: false,
-    ...options,
-  };
-
-  return defaultAsyncHandler.wrap(asyncFn, healthOptions);
-};
-
-/**
- * Express middleware to add async handler utilities to request
- */
-const asyncHandlerMiddleware = (req, res, next) => {
-  // Add async handler utilities to request
-  req.asyncHandler = {
-    wrap: (fn, options) => asyncHandler(fn, options),
-    middleware: (fn, options) => middlewareHandler(fn, options),
-    route: (fn, options) => routeHandler(fn, options),
-    longRunning: (fn, options) => longRunningHandler(fn, options),
-    healthCheck: (fn, options) => healthCheckHandler(fn, options),
-  };
-
-  next();
-};
-
-/**
- * Get global performance metrics
- */
-const getGlobalMetrics = () => {
-  return performanceMetrics.getMetrics();
-};
-
-/**
- * Reset global performance metrics
- */
-const resetGlobalMetrics = () => {
-  performanceMetrics.reset();
-};
-
-/**
- * Health check for async handler system
- */
-const healthCheck = () => {
-  const metrics = performanceMetrics.getMetrics();
-
-  return {
-    status: metrics.errorRate < 0.1 ? "healthy" : "degraded",
-    metrics: {
-      totalRequests: metrics.totalRequests,
-      errorRate: Math.round(metrics.errorRate * 100) / 100,
-      averageExecutionTime: Math.round(metrics.averageExecutionTime),
-      timeouts: metrics.timeouts,
-      memoryLeaks: metrics.memoryLeaks,
-    },
-    uptime: metrics.uptime,
-  };
-};
-
 module.exports = {
-  // Main exports (maintaining backward compatibility)
   asyncHandler,
   default: asyncHandler,
-
-  // Specialized handlers
-  middlewareHandler,
-  routeHandler,
-  longRunningHandler,
-  healthCheckHandler,
-
-  // Utilities
-  createAsyncHandler,
-  AsyncHandler,
-
-  // Middleware
-  asyncHandlerMiddleware,
-
-  // Metrics
-  getGlobalMetrics,
-  resetGlobalMetrics,
-  healthCheck,
 };

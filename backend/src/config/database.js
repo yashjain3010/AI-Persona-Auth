@@ -881,38 +881,14 @@ module.exports = {
     }
     return databaseManager.prisma;
   },
-
-  // Backward compatibility aliases
+  // Backward compatibility alias
   get prisma() {
     return databaseManager.prisma;
   },
-
-  get prismaAvailable() {
-    return databaseManager.connectionState === CONNECTION_STATES.CONNECTED;
-  },
-
   // Legacy methods for compatibility
   connectDatabase: wrappedOperations.initialize,
   disconnectDatabase: wrappedOperations.gracefulShutdown,
   checkDatabaseHealth: wrappedOperations.healthCheck,
-
-  // Database manager instance
-  manager: databaseManager,
-
-  // Connection states
-  CONNECTION_STATES,
-  OPERATION_TYPES,
-
-  // Wrapped operations
+  // Wrapped operations (transaction, cleanup, etc.)
   ...wrappedOperations,
-
-  // Backward compatibility methods for server.js
-  connectDB: wrappedOperations.initialize,
-  disconnectDB: wrappedOperations.gracefulShutdown,
-
-  // Utility methods
-  getConnectionInfo: () => databaseManager.getConnectionInfo(),
-
-  // Initialization promise for startup coordination
-  ready: initializationPromise,
 };
